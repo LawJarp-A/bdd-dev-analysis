@@ -1,22 +1,23 @@
 [project]
 name = "bdd-dev-analysis"
 version = "0.1.0"
-description = "Add your description here"
+description = "BDD100K object detection data analysis with interactive Streamlit dashboard"
 requires-python = ">=3.10"
 dependencies = [
     "gdown>=5.2.1",
     "matplotlib>=3.10.8",
     "numpy>=2.2.6",
+    "opencv-python-headless>=4.13.0.92",
     "pandas>=2.3.3",
     "pillow>=12.1.1",
     "scipy>=1.15.3",
     "seaborn>=0.13.2",
     "streamlit>=1.54.0",
+    "tqdm>=4.67.3",
 ]
 
 [dependency-groups]
 dev = [
     "black>=26.1.0",
     "pylint>=4.0.5",
-    "pytest>=9.0.2",
 ]
