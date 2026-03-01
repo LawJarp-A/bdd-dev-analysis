@@ -1,84 +1,90 @@
-# BDD100K Object Detection — Data Analysis
+# BDD100K Object Detection Pipeline
 
-Exploratory data analysis of the [BDD100K](https://www.vis.xyz/bdd100k/) driving dataset, focused on the 2D object detection task. The project parses raw JSON labels into a structured DataFrame, computes distribution and anomaly statistics, and serves an interactive Streamlit dashboard for visual exploration.
+End-to-end object detection on [BDD100K](https://www.vis.xyz/bdd100k/): data analysis, model training (RF-DETR), and evaluation — all in an interactive Streamlit dashboard.
 
-Built as part of a Bosch Applied Computer Vision interview assignment.
+## Quick Start
 
-## Quick Start (Docker)
-
+**Docker (recommended):**
 ```bash
-docker compose up --build
+docker build -t bdd-analysis .
+docker run -p 8501:8501 -v ./data:/app/data bdd-analysis
 ```
 
-Open [http://localhost:8501](http://localhost:8501). The dataset is downloaded automatically on first run if the `data/` directory is empty.
-
-## Local Development Setup
-
-Requires [uv](https://docs.astral.sh/uv/) and Python 3.10+.
-
+**Local:**
 ```bash
-# Install dependencies
 uv sync
-
-# Download dataset (auto-skips if already present)
 uv run python -m src.download_data
-
-# Launch dashboard
 uv run streamlit run src/dashboard.py
 ```
 
-## Image Quality Metrics (optional)
+Open [http://localhost:8501](http://localhost:8501). Data downloads automatically on first run.
 
-Pre-compute blur, brightness, and contrast metrics to enable the full Safety-Critical Edge Cases analysis:
+## Project Phases
+
+### Phase 1 — Data Analysis
+
+Parses BDD100K JSON labels into structured DataFrames and provides interactive exploration across 5 dashboard tabs:
+
+- **Overview** — Class distribution, co-occurrence matrix, train/val split balance
+- **Class Deep Dive** — Per-class size distributions, occlusion rates, spatial heatmaps
+- **Anomalies** — Size outliers, extreme aspect ratios with sample image viewer
+- **Safety-Critical Edge Cases** — Tiny pedestrians at night, occluded VRUs, crowded intersections, driving-lane filtering
+- **Sample Browser** — Browse images with color-coded bounding boxes (most crowded, rare classes, outliers, etc.)
+
+### Phase 2 — Model Training
+
+**Model:** [RF-DETR Large](https://github.com/roboflow/rf-detr) (33.6M params) — a real-time DETR variant with DINOv2 backbone.
+
+**Custom dataloader** (`src/training/dataset.py`) loads BDD100K images with albumentations augmentations and feeds them directly into RF-DETR's model. The training loop (`src/training/train.py`) replicates RF-DETR's recipe:
+
+- Layer-wise LR decay for backbone, cosine schedule with warmup
+- EMA, AMP (bfloat16), gradient accumulation, gradient clipping
+- Checkpoint saving (periodic + best)
 
 ```bash
-uv run python -m src.compute_image_metrics          # uses all available cores
-uv run python -m src.compute_image_metrics --workers 8  # custom thread count
+# Train on full dataset
+uv run python -m src.training.train --epochs 50 --batch-size 16
+
+# Quick test (1 epoch, 1% of data)
+uv run python -m src.training.train --epochs 1 --fraction 0.01 --batch-size 2
 ```
 
-This produces `data/image_metrics.csv` (~80K rows). The script supports incremental runs and shows a tqdm progress bar.
+### Phase 3 — Evaluation
 
-## Dashboard
+Evaluates the trained model on the validation set using COCO metrics. Dashboard tab 6 shows:
 
-The dashboard provides five tabs:
+- **Quantitative** — mAP@50/75, per-class AP, precision-recall curves, confusion matrix
+- **Failure Analysis** — Failure clustering by weather/time/object size, correlation analysis
+- **Qualitative** — Side-by-side GT vs predictions browser
 
-- **Overview** — Total annotations, unique images, class distribution chart, co-occurrence matrix, train/val split balance (chi-squared test), and attribute summary tables.
-- **Class Deep Dive** — Objects-per-image distribution, occlusion/truncation rates, per-class bounding box area distribution, and spatial heatmaps.
-- **Anomalies** — Per-class size outliers, extreme size boxes (tiny and huge), and extreme aspect ratios. Each anomaly includes an explanation and a sample image viewer with anomalous bboxes highlighted in red (other boxes shown in faded gray).
-- **Safety-Critical Edge Cases** — Scenarios where detection failures have the highest real-world cost: tiny VRUs at night/rain, occluded pedestrians near cars, crowded night intersections, truncated pedestrians, blurry/dark frames with VRUs, rare condition combos, and a blind spots analysis of unlabeled object types.
-- **Sample Browser** — Browse images with color-coded bounding box overlays. Modes: Most Crowded, Rare Classes, Single-Class Images, Per-Class Outliers, Highly Occluded, Random.
+```bash
+# Run inference on val set
+uv run python -m src.evaluation.run_inference
+
+# Compute and cache eval metrics
+uv run python -m src.evaluation.metrics
+```
 
 ## Project Structure
 
 ```
-bdd-dev-analysis/
-├── data/                      # Dataset (gitignored, auto-downloaded)
-├── docs/                      # Analysis report
-├── src/
-│   ├── __init__.py
-│   ├── compute_image_metrics.py  # Pre-compute blur/brightness/contrast
-│   ├── download_data.py       # Google Drive download + extraction
-│   ├── parser.py              # JSON label parsing to DataFrame
-│   ├── analysis.py            # Statistics, anomaly detection, safety queries, plots
-│   └── dashboard.py           # Streamlit application
-├── pyproject.toml             # Project metadata and dependencies
-├── uv.lock                    # Locked dependency versions
-├── Dockerfile
-├── docker-compose.yml
-└── README.md
+src/
+├── parser.py                  # JSON label parsing
+├── analysis.py                # Statistics, anomaly detection, safety queries
+├── compute_image_metrics.py   # Blur/brightness/contrast metrics
+├── download_data.py           # Dataset download
+├── dashboard.py               # Streamlit app (6 tabs)
+├── training/
+│   ├── dataset.py             # Custom BDD100K PyTorch Dataset
+│   ├── train.py               # Training loop with RF-DETR internals
+│   └── convert_to_coco.py     # BDD100K → COCO format conversion
+└── evaluation/
+    ├── run_inference.py        # Val set inference
+    └── metrics.py              # COCO eval, confusion matrix, failure analysis
 ```
 
 ## Dataset
 
-**BDD100K** — 80,000 images (70K train / 10K val) at 1280x720 resolution, with 2D bounding box annotations across 10 object classes:
+**BDD100K** — 80K images (70K train / 10K val), 1280x720, 10 detection classes: bike, bus, car, motor, person, rider, traffic light, traffic sign, train, truck.
 
-| Class | Class | Class |
-|-------|-------|-------|
-| bike | bus | car |
-| motor | person | rider |
-| traffic light | traffic sign | train |
-| truck | | |
-
-Each annotation includes bounding box coordinates, occlusion/truncation flags, and image-level attributes (weather, scene, time of day).
-
-The dataset is hosted on Google Drive and downloaded automatically by `src/download_data.py` when the `data/` directory is missing.
+Each annotation includes bounding box, occlusion/truncation flags, and image-level attributes (weather, scene, time of day).
