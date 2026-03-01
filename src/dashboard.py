@@ -7,16 +7,27 @@ from pathlib import Path
 # when Streamlit runs this file directly.
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
+import json  # noqa: E402
+from collections import defaultdict  # noqa: E402
+
 import matplotlib.patches as patches  # noqa: E402
 import matplotlib.pyplot as plt  # noqa: E402
 import numpy as np  # noqa: E402
 import pandas as pd  # noqa: E402
+import seaborn as sns  # noqa: E402
 import streamlit as st  # noqa: E402
 from PIL import Image  # noqa: E402
 
 from src import analysis  # noqa: E402
 from src.compute_image_metrics import METRICS_PATH  # noqa: E402
-from src.parser import DETECTION_CLASSES, IMAGE_DIRS, parse_labels  # noqa: E402
+from src.evaluation.metrics import COCO_ANN, PRED_JSON, load_cache as load_eval_cache  # noqa: E402
+from src.parser import (  # noqa: E402
+    DETECTION_CLASSES,
+    IMAGE_DIRS,
+    annotate_ego_lane,
+    parse_drivable_areas,
+    parse_labels,
+)
 
 
 def _show_fig(fig: plt.Figure) -> None:
@@ -27,16 +38,15 @@ def _show_fig(fig: plt.Figure) -> None:
 
 @st.cache_data
 def load_data() -> pd.DataFrame:
-    """Load and cache the parsed dataset."""
-    return parse_labels(split="all")
+    """Load and cache the parsed dataset with ego lane annotations."""
+    df = parse_labels(split="all")
+    return annotate_ego_lane(df, parse_drivable_areas(split="all"))
 
 
 @st.cache_data
 def load_metrics() -> pd.DataFrame | None:
     """Load pre-computed image quality metrics if available."""
-    if METRICS_PATH.exists():
-        return pd.read_csv(METRICS_PATH)
-    return None
+    return pd.read_csv(METRICS_PATH) if METRICS_PATH.exists() else None
 
 
 # ---------------------------------------------------------------------------
@@ -70,11 +80,9 @@ def overview_tab(df: pd.DataFrame) -> None:
         f"Chi-squared: **{chi2_result['chi2']:.2f}**, p-value: **{chi2_result['p_value']:.2e}**, dof: {chi2_result['dof']}"
     )
     if chi2_result["p_value"] < 0.05:
-        st.warning(
-            "Statistically significant difference in class distribution between train and val splits."
-        )
+        st.warning("Class distribution differs significantly between train and val.")
     else:
-        st.success("No significant difference in class distribution between splits.")
+        st.success("Train and val splits are well-balanced.")
 
     st.subheader("Attribute Summary")
     for attr in ["weather", "scene", "timeofday"]:
@@ -125,16 +133,7 @@ def _render_image_with_boxes(
     img_data: pd.DataFrame,
     highlight_indices: set | None = None,
 ) -> plt.Figure:
-    """Draw bounding boxes on an image.
-
-    Args:
-        img_path: Path to the image file.
-        img_data: DataFrame rows for this image.
-        highlight_indices: If provided, these DataFrame index values are drawn
-            in bold red with labels. All other boxes are drawn in faded gray
-            without labels. If None, all boxes are drawn normally with
-            class-specific colors.
-    """
+    """Draw bounding boxes on an image. Highlighted indices are shown in red; others faded."""
     img_np = np.array(Image.open(img_path))
 
     fig, ax = plt.subplots(1, figsize=(14, 8))
@@ -245,10 +244,9 @@ def anomalies_tab(df: pd.DataFrame) -> None:
     # --- Per-class outliers ---
     st.subheader("Per-Class Size Outliers (5th / 95th percentile)")
     st.write(
-        "Flags boxes that are unusually small or large **relative to their own class**. "
-        "A 50 px\u00b2 traffic light is normal; a 50 px\u00b2 car is an outlier. "
-        "These per-class outliers may indicate annotation errors, unusual viewing angles, "
-        "or edge-case distances that the model will struggle with."
+        "Boxes that are unusually small or large **for their class** "
+        "(e.g. a 50 px\u00b2 car is an outlier, but a 50 px\u00b2 traffic light isn't). "
+        "Could be annotation errors, extreme distances, or unusual viewpoints."
     )
     outliers = analysis.per_class_outliers(df, column="area")
     if not outliers.empty:
@@ -266,11 +264,9 @@ def anomalies_tab(df: pd.DataFrame) -> None:
     tiny = analysis.tiny_boxes(df)
     huge = analysis.huge_boxes(df)
     st.write(
-        f"**{len(tiny):,}** boxes ({len(tiny) / total * 100:.1f}% of all) occupy less than "
-        f"1% of the image \u2014 most objects are at medium-to-far range. Models without "
-        f"multi-scale feature extraction (e.g., FPN) will systematically miss these. "
-        f"On the other end, **{len(huge):,}** boxes exceed 80% of image area (close-range "
-        f"objects filling the frame)."
+        f"**{len(tiny):,}** boxes ({len(tiny) / total * 100:.1f}%) are under 1% of image area "
+        f"(far-range objects). **{len(huge):,}** exceed 80% (very close-range). "
+        f"Models need multi-scale features (e.g. FPN) to handle both extremes."
     )
     if not tiny.empty:
         st.dataframe(_anomaly_category_summary(tiny))
@@ -280,10 +276,9 @@ def anomalies_tab(df: pd.DataFrame) -> None:
     st.subheader("Extreme Aspect Ratios (< 0.1 or > 10)")
     extreme = analysis.extreme_aspect_ratios(df)
     st.write(
-        f"**{len(extreme):,}** boxes have extreme width-to-height ratios. These typically "
-        f"represent partially visible objects at frame edges (consistent with truncation) "
-        f"or annotation artifacts. At {len(extreme) / total * 100:.2f}% of the dataset, "
-        f"their training impact is negligible but they should be reviewed for quality."
+        f"**{len(extreme):,}** boxes ({len(extreme) / total * 100:.2f}%) with extreme aspect ratios. "
+        f"Usually partial objects at frame edges or annotation artifacts. "
+        f"Negligible training impact, but worth reviewing."
     )
     if not extreme.empty:
         st.dataframe(_anomaly_category_summary(extreme))
@@ -320,34 +315,39 @@ def safety_critical_tab(df: pd.DataFrame, metrics_df: pd.DataFrame | None) -> No
     """Safety-critical edge cases relevant to autonomous driving."""
     st.header("Safety-Critical Edge Cases")
     st.write(
-        "These scenarios represent conditions where an object detection system is most "
-        "likely to fail \u2014 and where failure has the highest real-world cost. Each case "
-        "combines multiple difficulty factors (small size + poor visibility, occlusion + "
-        "proximity to vehicles, etc.)."
+        "Scenarios where detection is hardest and failure costs are highest. "
+        "Each case stacks multiple risk factors (small size, poor visibility, occlusion, etc.)."
     )
 
-    _safety_case_section(
-        title="Tiny Vulnerable Road Users at Night / Rain",
-        explanation=(
-            "Small pedestrians, riders, and cyclists in low-visibility conditions. "
-            "These combine the two hardest detection challenges: small object size "
-            "and degraded image quality. Missing a 20-pixel pedestrian at night is "
-            "the canonical ADAS failure mode."
+    ego_lane_only = st.checkbox(
+        "Show only objects in the driving lane",
+        value=False,
+        help=(
+            "Only flag objects whose foot point falls inside BDD100K's drivable area annotation "
+            "(the vehicle's driving lane). Applies to: tiny road users, occluded pedestrians, blurry/dark frames."
         ),
-        case_df=analysis.tiny_vru_night_rain(df),
+    )
+    ego_suffix = " **[Driving Lane Filter ON]**" if ego_lane_only else ""
+
+    _safety_case_section(
+        title="Tiny Road Users at Night / Rain",
+        explanation=(
+            "Pedestrians, riders, and cyclists under **0.05% of image area** (~21x21 px) "
+            "in night or rain. Barely a handful of pixels in poor visibility — "
+            "detectors have near-zero recall here." + ego_suffix
+        ),
+        case_df=analysis.tiny_vru_night_rain(df, ego_lane_only=ego_lane_only),
         full_df=df,
         key="safety_tiny_vru",
     )
 
     _safety_case_section(
-        title="Occluded Pedestrians Near Cars",
+        title="Occluded Tiny Pedestrians Near Cars",
         explanation=(
-            "Pedestrians marked as occluded in images that also contain cars. "
-            "This simulates people partially hidden behind parked or moving vehicles "
-            "\u2014 a scenario responsible for a significant share of real-world "
-            "pedestrian collisions."
+            "The worst-case ADAS scenario: pedestrians that are **tiny** (<0.1% area), "
+            "**occluded**, near **cars**, and in **night or rain** — all at once." + ego_suffix
         ),
-        case_df=analysis.occluded_pedestrian_near_cars(df),
+        case_df=analysis.occluded_pedestrian_near_cars(df, ego_lane_only=ego_lane_only),
         full_df=df,
         key="safety_occluded_ped",
     )
@@ -355,9 +355,8 @@ def safety_critical_tab(df: pd.DataFrame, metrics_df: pd.DataFrame | None) -> No
     _safety_case_section(
         title="Crowded Night Intersections",
         explanation=(
-            "City street scenes at night with 30+ annotated objects. High object "
-            "density combined with low light stresses both the detector and NMS, "
-            "increasing missed and merged detections."
+            "Night city scenes with **50+ objects**. High density pushes NMS to its limits — "
+            "overlapping detections get suppressed and small objects between larger ones are missed."
         ),
         case_df=analysis.crowded_night_intersection(df),
         full_df=df,
@@ -367,9 +366,8 @@ def safety_critical_tab(df: pd.DataFrame, metrics_df: pd.DataFrame | None) -> No
     _safety_case_section(
         title="Truncated Pedestrians at Frame Edge",
         explanation=(
-            "People partially cut off at the image boundary. These pedestrians are "
-            "entering or leaving the camera\u2019s field of view and are easy for "
-            "detectors to miss, yet critical for path planning and collision avoidance."
+            "Truncated pedestrians **within 20 px of the frame boundary** — people entering or "
+            "leaving the field of view. Detectors trained on full bodies struggle with partial views."
         ),
         case_df=analysis.truncated_person_edge(df),
         full_df=df,
@@ -379,25 +377,29 @@ def safety_critical_tab(df: pd.DataFrame, metrics_df: pd.DataFrame | None) -> No
     # Image-quality-based cases (require pre-computed metrics)
     if metrics_df is not None:
         _safety_case_section(
-            title="Blurry Frames with Pedestrians",
+            title="Severely Blurry Frames with Pedestrians",
             explanation=(
-                "Images with low Laplacian variance (blur) that contain pedestrian "
-                "annotations. Motion blur or camera shake degrades feature extraction "
-                "and makes pedestrian detection unreliable in these safety-critical frames."
+                "Bottom **2% by sharpness** (Laplacian variance < 15) with pedestrians present. "
+                "Edges and textures are destroyed — the features detectors rely on simply aren't there."
+                + ego_suffix
             ),
-            case_df=analysis.blurry_with_pedestrians(df, metrics_df),
+            case_df=analysis.blurry_with_pedestrians(
+                df, metrics_df, ego_lane_only=ego_lane_only
+            ),
             full_df=df,
             key="safety_blurry",
         )
 
         _safety_case_section(
-            title="Dark / Underexposed Frames with VRUs",
+            title="Very Dark Frames with Road Users",
             explanation=(
-                "Images with very low mean brightness containing pedestrians, riders, "
-                "or cyclists. Low-light conditions reduce contrast and make vulnerable "
-                "road users harder to distinguish from the background."
+                "Bottom **10% by brightness** (mean pixel < 20) with pedestrians, riders, or cyclists. "
+                "Near-black frames where road users have almost no contrast — even human annotators struggle."
+                + ego_suffix
             ),
-            case_df=analysis.dark_with_vru(df, metrics_df),
+            case_df=analysis.dark_with_vru(
+                df, metrics_df, ego_lane_only=ego_lane_only
+            ),
             full_df=df,
             key="safety_dark",
         )
@@ -410,9 +412,8 @@ def safety_critical_tab(df: pd.DataFrame, metrics_df: pd.DataFrame | None) -> No
     # Rare condition combos
     st.subheader("Rarest Weather + Time-of-Day Combinations")
     st.write(
-        "Under-represented environmental conditions. Models trained predominantly on "
-        "clear/daytime data will have blind spots for these rare combinations. "
-        "Targeted evaluation on these slices is essential."
+        "Under-represented conditions the model has seen least. "
+        "Expect weaker performance on these slices — targeted evaluation recommended."
     )
     combos = analysis.rare_condition_combos(df)
     st.dataframe(combos)
@@ -420,19 +421,14 @@ def safety_critical_tab(df: pd.DataFrame, metrics_df: pd.DataFrame | None) -> No
     # Blind spots callout
     st.subheader("Detection Blind Spots")
     st.info(
-        "**Objects not covered by the 10 detection classes:**\n\n"
-        "The BDD100K object detection task only labels bikes, buses, cars, motors, "
-        "persons, riders, traffic lights, traffic signs, trains, and trucks. This means "
-        "the following safety-relevant objects are **invisible** to any model trained on "
-        "this dataset:\n\n"
-        "- **Animals** (deer, dogs) \u2014 common collision cause in rural/suburban areas\n"
+        "**Unlabeled safety-relevant objects** (not in the 10 BDD100K detection classes):\n\n"
+        "- **Animals** (deer, dogs) — common rural/suburban collision cause\n"
         "- **Road debris** (fallen cargo, tire fragments)\n"
-        "- **Construction equipment** (cones, barriers, workers)\n"
+        "- **Construction zones** (cones, barriers, workers)\n"
         "- **Emergency vehicles** with non-standard profiles\n"
-        "- **Wheelchairs, strollers, shopping carts** \u2014 non-standard VRUs\n"
-        "- **Fallen pedestrians** \u2014 people lying on the road\n\n"
-        "Any production deployment must augment this detector with additional models "
-        "or a catch-all anomaly detection system to handle out-of-distribution objects."
+        "- **Non-standard road users** (wheelchairs, strollers, shopping carts)\n"
+        "- **Fallen pedestrians** on the road\n\n"
+        "Production systems need additional models or anomaly detection to cover these."
     )
 
 
@@ -516,20 +512,249 @@ def sample_browser_tab(df: pd.DataFrame) -> None:
 
 
 # ---------------------------------------------------------------------------
+# Evaluation Cache Loaders
+# ---------------------------------------------------------------------------
+
+
+@st.cache_data
+def load_eval_results() -> dict | None:
+    """Load pre-computed evaluation + failure analysis results."""
+    return load_eval_cache()
+
+
+@st.cache_data
+def load_predictions() -> dict:
+    """Load raw predictions grouped by image name for qualitative viz."""
+    pred_csv = PRED_JSON.with_suffix(".csv")
+    if not pred_csv.exists() and not PRED_JSON.exists():
+        return {}
+
+    with open(COCO_ANN) as f:
+        coco = json.load(f)
+    id_to_name = {img["id"]: img["file_name"] for img in coco["images"]}
+
+    by_img = defaultdict(list)
+    if pred_csv.exists():
+        import csv
+        with open(pred_csv) as f:
+            for row in csv.DictReader(f):
+                x, y, w, h = float(row["x"]), float(row["y"]), float(row["w"]), float(row["h"])
+                by_img[id_to_name.get(int(row["image_id"]), "")].append({
+                    "x1": x, "y1": y, "x2": x + w, "y2": y + h,
+                    "class": DETECTION_CLASSES[int(row["category_id"])],
+                    "score": float(row["score"]),
+                })
+    else:
+        with open(PRED_JSON) as f:
+            preds = json.load(f)
+        for p in preds:
+            x, y, w, h = p["bbox"]
+            by_img[id_to_name.get(p["image_id"], "")].append({
+                "x1": x, "y1": y, "x2": x + w, "y2": y + h,
+                "class": DETECTION_CLASSES[p["category_id"]],
+                "score": p["score"],
+            })
+    return dict(by_img)
+
+
+# ---------------------------------------------------------------------------
+# Tab 6: Model Evaluation (Quantitative + Failure Analysis merged)
+# ---------------------------------------------------------------------------
+
+
+def _render_gt_vs_pred(img_path: Path, gt_df: pd.DataFrame, pred_list: list[dict]) -> plt.Figure:
+    """Render image with GT (green) and predictions (orange=TP, red=FP), missed GT in yellow."""
+    from src.evaluation.metrics import _iou
+
+    img_np = np.array(Image.open(img_path))
+    fig, ax = plt.subplots(1, figsize=(14, 8))
+    ax.imshow(img_np)
+
+    gt_boxes = gt_df[["x1", "y1", "x2", "y2"]].values
+    preds_sorted = sorted(pred_list, key=lambda p: p["score"], reverse=True)
+
+    # Greedy match predictions to GT
+    gt_matched = set()
+    pred_status = []
+    for p in preds_sorted:
+        pb = [p["x1"], p["y1"], p["x2"], p["y2"]]
+        best_iou, best_idx = 0, -1
+        for i, gb in enumerate(gt_boxes):
+            if i in gt_matched:
+                continue
+            iou_val = _iou(pb, gb)
+            if iou_val > best_iou:
+                best_iou = iou_val
+                best_idx = i
+        is_tp = best_iou >= 0.5 and best_idx >= 0
+        if is_tp:
+            gt_matched.add(best_idx)
+        pred_status.append((p, is_tp))
+
+    # Draw GT boxes: green=matched, yellow=missed
+    for i, (_, row) in enumerate(gt_df.iterrows()):
+        matched = i in gt_matched
+        color = (0, 0.8, 0) if matched else (1, 1, 0)
+        label = f"{row['category']} [{'GT' if matched else 'MISSED'}]"
+        rect = patches.Rectangle((row["x1"], row["y1"]), row["x2"] - row["x1"], row["y2"] - row["y1"],
+                                  linewidth=2, edgecolor=color, facecolor="none")
+        ax.add_patch(rect)
+        ax.text(row["x1"], row["y1"] - 5, label, color="white", fontsize=7,
+                bbox=dict(boxstyle="round,pad=0.2", facecolor=color, alpha=0.7))
+
+    # Draw predictions: orange=TP, red=FP
+    n_shown_preds = 0
+    for p, is_tp in pred_status:
+        if p["score"] < 0.3:
+            continue
+        n_shown_preds += 1
+        color = (1, 0.6, 0) if is_tp else (1, 0, 0)
+        label = f"{p['class']} {p['score']:.2f}" + ("" if is_tp else " [FP]")
+        rect = patches.Rectangle((p["x1"], p["y1"]), p["x2"] - p["x1"], p["y2"] - p["y1"],
+                                  linewidth=2, edgecolor=color, facecolor="none",
+                                  linestyle="--" if is_tp else "-")
+        ax.add_patch(rect)
+        ax.text(p["x2"], p["y1"] - 5, label, color="white", fontsize=7,
+                bbox=dict(boxstyle="round,pad=0.2", facecolor=color, alpha=0.7))
+
+    n_missed = len(gt_boxes) - len(gt_matched)
+    ax.set_title(f"{img_path.name} | GT: {len(gt_boxes)}, Preds: {n_shown_preds}, Missed: {n_missed}")
+    ax.axis("off")
+    plt.tight_layout()
+    return fig
+
+
+def model_evaluation_tab(df: pd.DataFrame) -> None:
+    """Combined model evaluation: quantitative metrics + failure analysis."""
+    st.header("Model Evaluation")
+
+    eval_results = load_eval_results()
+    if eval_results is None:
+        st.warning("Evaluation not yet computed. Run: `uv run python -m src.evaluation.run_inference` then `uv run python -m src.evaluation.metrics`")
+        return
+
+    coco = eval_results["coco_metrics"]
+    overall = coco["overall"]
+
+    # Metric cards
+    c1, c2, c3, c4, c5 = st.columns(5)
+    c1.metric("mAP@50", f"{overall['mAP50']:.3f}")
+    c2.metric("mAP@50:95", f"{overall['mAP5095']:.3f}")
+    c3.metric("AP Small", f"{overall['AP_small']:.3f}")
+    c4.metric("AP Medium", f"{overall['AP_medium']:.3f}")
+    c5.metric("AP Large", f"{overall['AP_large']:.3f}")
+
+    # Per-class table
+    st.subheader("Per-Class Performance")
+    st.dataframe(coco["per_class"].sort_values("AP50", ascending=False), hide_index=True)
+
+    # PR Curves
+    st.subheader("Precision-Recall Curves")
+    pr_class = st.selectbox("Class", ["All"] + DETECTION_CLASSES, key="pr_class")
+    fig, ax = plt.subplots(figsize=(10, 6))
+    pr_data = coco["pr_curves"]
+    for cls_name, data in pr_data.items():
+        if pr_class != "All" and cls_name != pr_class:
+            continue
+        prec = np.array(data["precision"])
+        rec = np.array(data["recall"])
+        valid = prec > -1
+        if valid.any():
+            ax.plot(rec[valid], prec[valid], label=f"{cls_name} (AP={np.mean(prec[valid]):.3f})")
+    ax.set_xlabel("Recall")
+    ax.set_ylabel("Precision")
+    ax.set_title("Precision-Recall Curves (IoU=0.50)")
+    ax.legend(fontsize=8, loc="lower left")
+    ax.set_xlim(0, 1)
+    ax.set_ylim(0, 1)
+    plt.tight_layout()
+    _show_fig(fig)
+
+    # Confusion Matrix
+    st.subheader("Confusion Matrix")
+    st.caption("Rows = ground truth class, columns = predicted class. 'background' = missed detections.")
+    cm = eval_results["confusion_matrix"]
+    cm_norm = cm.div(cm.sum(axis=1).replace(0, 1), axis=0)
+    fig, ax = plt.subplots(figsize=(12, 9))
+    sns.heatmap(cm_norm, annot=True, fmt=".2f", cmap="YlOrRd", ax=ax, xticklabels=True, yticklabels=True)
+    ax.set_title("Confusion Matrix (row-normalized)")
+    ax.set_ylabel("Ground Truth")
+    ax.set_xlabel("Predicted")
+    plt.tight_layout()
+    _show_fig(fig)
+
+    # AP by size per class
+    st.subheader("AP by Object Size")
+    st.caption("COCO size thresholds: small < 32x32 px, medium < 96x96 px, large >= 96x96 px")
+    pc = coco["per_class"]
+    fig, ax = plt.subplots(figsize=(12, 6))
+    x = np.arange(len(pc))
+    w = 0.25
+    ax.bar(x - w, pc["AP_small"], w, label="Small")
+    ax.bar(x, pc["AP_medium"], w, label="Medium")
+    ax.bar(x + w, pc["AP_large"], w, label="Large")
+    ax.set_xticks(x)
+    ax.set_xticklabels(pc["class"], rotation=45, ha="right")
+    ax.set_ylabel("AP@50:95")
+    ax.set_title("AP by Object Size per Class")
+    ax.legend()
+    plt.tight_layout()
+    _show_fig(fig)
+
+    # --- Failure Analysis section (same cache) ---
+    st.subheader("Hardest Conditions (highest failure rate)")
+    st.caption("Failure = image where model recall < 0.5")
+    st.dataframe(eval_results["clusters"].head(15), hide_index=True)
+
+    st.subheader("Phase 1 Data Features vs Model Recall")
+    st.caption("Pearson/Spearman correlation between data characteristics and per-image recall")
+    st.dataframe(eval_results["correlation_table"], hide_index=True)
+
+    # GT vs Predictions browser
+    st.subheader("GT vs Predictions Browser")
+    preds_by_img = load_predictions()
+    if not preds_by_img:
+        st.info("No predictions loaded.")
+        return
+
+    failure_df = eval_results["failure_df"]
+    browse_mode = st.selectbox("Browse", ["Worst Recall", "Random"], key="fail_browse")
+    per_img = failure_df.sort_values("recall")
+    if browse_mode == "Random":
+        per_img = per_img.sample(min(20, len(per_img)))
+    img_names = per_img.head(20)["image_name"].tolist()
+
+    if img_names:
+        selected = st.selectbox("Image", img_names, key="fail_img")
+        row = per_img[per_img["image_name"] == selected].iloc[0]
+        st.write(f"Precision: **{row['precision']:.3f}** | Recall: **{row['recall']:.3f}** | "
+                 f"GT: {row['gt_count']} | Preds: {row['pred_count']} | {row['weather']}, {row['timeofday']}")
+
+        img_path = IMAGE_DIRS["val"] / selected
+        val_df = df[(df["image_name"] == selected) & (df["split"] == "val")]
+        img_preds = preds_by_img.get(selected, [])
+
+        if img_path.exists() and not val_df.empty:
+            _show_fig(_render_gt_vs_pred(img_path, val_df, img_preds))
+
+
+
+# ---------------------------------------------------------------------------
 # Main
 # ---------------------------------------------------------------------------
 
 
 def main() -> None:
     """Main dashboard entry point."""
-    st.set_page_config(page_title="BDD100K Data Analysis", layout="wide")
-    st.title("BDD100K Object Detection \u2014 Data Analysis")
+    st.set_page_config(page_title="BDD100K Analysis & Evaluation", layout="wide")
+    st.title("BDD100K Object Detection — Analysis & Evaluation")
 
     df = load_data()
     metrics_df = load_metrics()
 
-    tab1, tab2, tab3, tab4, tab5 = st.tabs(
-        ["Overview", "Class Deep Dive", "Anomalies", "Safety-Critical Edge Cases", "Sample Browser"]
+    tab1, tab2, tab3, tab4, tab5, tab6 = st.tabs(
+        ["Overview", "Class Deep Dive", "Anomalies", "Safety-Critical Edge Cases",
+         "Sample Browser", "Model Evaluation"]
     )
 
     with tab1:
@@ -542,6 +767,8 @@ def main() -> None:
         safety_critical_tab(df, metrics_df)
     with tab5:
         sample_browser_tab(df)
+    with tab6:
+        model_evaluation_tab(df)
 
 
 if __name__ == "__main__":
