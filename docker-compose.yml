@@ -7,3 +7,4 @@ services:
       - ./data:/app/data
     environment:
       - STREAMLIT_SERVER_HEADLESS=true
+    restart: unless-stopped

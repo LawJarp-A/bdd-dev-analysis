@@ -1,0 +1,37 @@
+# Python / venv
+.venv/
+__pycache__/
+*.pyc
+*.pyo
+*.egg-info/
+dist/
+build/
+.pytest_cache/
+
+# Git
+.git/
+.gitignore
+
+# IDE
+.vscode/
+.idea/
+*.swp
+
+# Model weights (large files)
+*.pth
+*.pt
+*.onnx
+*.bin
+*.safetensors
+
+# Training outputs
+runs/
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Misc
+.env
+.claude/
+docs/

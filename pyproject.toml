@@ -14,6 +14,8 @@ dependencies = [
     "seaborn>=0.13.2",
     "streamlit>=1.54.0",
     "tqdm>=4.67.3",
+    "rfdetr>=1.0.0",
+    "albumentations>=1.4.0",
 ]
 
 [dependency-groups]

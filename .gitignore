@@ -1,14 +1,35 @@
-# Dataset files (too large for git)
+# Dataset and model weights
 data/
+!data/predictions/
+data/predictions/*.json
+data/predictions/*.pkl
+*.pth
+*.pt
+*.onnx
+*.bin
+*.safetensors
+
+# Training outputs
+runs/
 
 # Python
 __pycache__/
 *.pyc
+*.pyo
+*.egg-info/
 .venv/
+.pytest_cache/
+dist/
+build/
 
 # IDE
 .vscode/
 .idea/
+*.swp
 
 # OS
 .DS_Store
+Thumbs.db
+
+# Environment
+.env
