@@ -59,11 +59,11 @@ The dashboard presents all of this across 5 interactive tabs (Overview, Class De
 
 - **DETR-family advantages.** RF-DETR is a Detection Transformer that uses set-based prediction with bipartite matching instead of anchor boxes and NMS. This eliminates hand-tuned anchor design and NMS thresholds, which is especially valuable for BDD100K where object scales vary dramatically (tiny traffic lights to large trucks in the same frame).
 
-- **DINOv2 backbone.** RF-DETR uses a DINOv2 vision transformer backbone pretrained with self-supervised learning on 142M images. DINOv2 features are more robust to domain shifts (weather, lighting) compared to ImageNet-supervised backbones like ResNet. This matters for BDD100K where conditions range from clear daytime to rainy night.
+- **DINOv2 backbone.** The key reason we chose RF-DETR is its DINOv2 vision transformer backbone, pretrained in a self-supervised manner on 142M unlabeled images. Because DINOv2 learns general visual features without relying on labeled data, it transfers well to new domains. Fine-tuning on a smaller labeled dataset like BDD100K gives quick domain adaptation wins without needing to train from scratch. DINOv2 features are also more robust to domain shifts (weather, lighting) compared to ImageNet-supervised backbones like ResNet, which matters for BDD100K where conditions range from clear daytime to rainy night.
 
 - **Multi-scale feature handling.** The architecture includes a feature pyramid that processes objects at multiple scales natively. Given that BDD100K has extreme scale variation (AP_small and AP_large differ by 4-5x across classes), strong multi-scale handling is critical.
 
-- **Real-time capable.** RF-DETR achieves competitive accuracy while maintaining real-time inference speeds, which aligns with the autonomous driving use case where latency matters.
+- **Fast inference.** When exported to TensorRT, the DETR-family transformer architecture runs on par with YOLO in terms of latency, making it practical for real-time autonomous driving use cases. Unlike YOLO, it achieves this without NMS post-processing overhead.
 
 - **Modern training recipe.** Layer-wise LR decay, cosine schedule with warmup, EMA, AMP (bfloat16), and gradient clipping are all built into the training pipeline. These techniques collectively improve convergence stability and final accuracy.
 
