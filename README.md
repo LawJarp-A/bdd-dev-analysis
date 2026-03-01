@@ -6,6 +6,9 @@ End-to-end object detection on [BDD100K](https://www.vis.xyz/bdd100k/): data ana
 
 **Docker (recommended):**
 ```bash
+docker compose up          # builds and runs everything
+
+# or manually:
 docker build -t bdd-analysis .
 docker run -p 8501:8501 -v ./data:/app/data bdd-analysis
 ```
@@ -177,3 +180,14 @@ src/
 **BDD100K** — 80K images (70K train / 10K val), 1280x720, 10 detection classes: bike, bus, car, motor, person, rider, traffic light, traffic sign, train, truck.
 
 Each annotation includes bounding box, occlusion/truncation flags, and image-level attributes (weather, scene, time of day).
+
+## Given More Time
+
+- **Class-balanced training** — focal loss or oversampling for rare classes (`train`: 170 samples, `motor`: 452) to close the AP gap with dominant classes
+- **Targeted augmentation** — synthetic rain/night transforms and copy-paste augmentation for small objects, addressing the 37% failure rate in rainy+night conditions
+- **Higher resolution training** — train at native 1280x720 to improve small object AP (currently 13.4% vs 61.6% for large)
+- **Hard example mining** — use failure clusters to oversample the hardest images during training
+- **TIDE error decomposition** — break AP loss into classification, localization, duplicate, and missed detection errors
+- **Confidence calibration** — verify prediction scores are well-calibrated, critical for safety applications
+- **Interactive failure browser** — click failure cluster cells to see the actual failing images
+- **Model comparison view** — side-by-side evaluation across training runs

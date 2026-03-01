@@ -26,7 +26,10 @@ def main():
     from rfdetr import RFDETRLarge
 
     ckpt = sys.argv[1] if len(sys.argv) > 1 else str(DEFAULT_CKPT)
-    model = RFDETRLarge(pretrain_weights=ckpt, num_classes=11)
+    if not Path(ckpt).exists():
+        raise FileNotFoundError(f"Checkpoint not found: {ckpt}")
+
+    model = RFDETRLarge(pretrain_weights=ckpt, num_classes=len(DETECTION_CLASSES) + 1)
     model.model.class_names = DETECTION_CLASSES
 
     with open(COCO_ANN) as f:

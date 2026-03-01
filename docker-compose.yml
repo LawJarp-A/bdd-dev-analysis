@@ -5,6 +5,7 @@ services:
       - "8501:8501"
     volumes:
       - ./data:/app/data
+      - ./runs:/app/runs
     environment:
       - STREAMLIT_SERVER_HEADLESS=true
     restart: unless-stopped

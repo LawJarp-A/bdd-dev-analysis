@@ -1,7 +1,4 @@
-"""Pre-compute blur, brightness, and contrast for all BDD100K images.
-
-Usage: python -m src.compute_image_metrics [--workers 8]
-"""
+"""Pre-compute blur, brightness, and contrast for BDD100K images."""
 
 import argparse
 import os
@@ -19,7 +16,6 @@ METRICS_PATH = Path(__file__).resolve().parent.parent / "data" / "image_metrics.
 
 
 def _compute_one(img_path: Path, split: str) -> dict:
-    """Return blur, brightness, contrast for a single image."""
     result = {"image_name": img_path.name, "split": split}
     img = cv2.imread(str(img_path))
     if img is None:
@@ -39,7 +35,6 @@ def _compute_one(img_path: Path, split: str) -> dict:
 
 
 def compute_all(workers: int | None = None) -> pd.DataFrame:
-    """Compute metrics for all images (incremental — skips already-done)."""
     workers = workers or min(os.cpu_count() or 4, 16)
     existing = pd.read_csv(METRICS_PATH) if METRICS_PATH.exists() else pd.DataFrame()
     done = set(existing["image_name"]) if len(existing) else set()
@@ -51,7 +46,6 @@ def compute_all(workers: int | None = None) -> pd.DataFrame:
         for f in sorted(d.iterdir())
         if f.suffix.lower() in {".jpg", ".jpeg", ".png"} and f.name not in done
     ]
-
     if not todo:
         print(f"All {len(done)} images already processed.")
         return existing

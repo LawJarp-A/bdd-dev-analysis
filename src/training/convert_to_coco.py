@@ -1,4 +1,4 @@
-"""Convert BDD100K annotations to COCO format for RF-DETR training."""
+"""Convert BDD100K annotations to COCO format for training."""
 
 import json
 import os
@@ -6,29 +6,19 @@ from pathlib import Path
 
 from tqdm import tqdm
 
-from src.parser import (
-    DETECTION_CLASSES,
-    IMAGE_DIRS,
-    IMG_HEIGHT,
-    IMG_WIDTH,
-    LABEL_FILES,
-)
+from src.parser import DETECTION_CLASSES, IMAGE_DIRS, IMG_HEIGHT, IMG_WIDTH, LABEL_FILES
 
 CLASS_TO_ID = {cls: i for i, cls in enumerate(DETECTION_CLASSES)}
 COCO_BASE = Path(__file__).resolve().parent.parent.parent / "data" / "bdd100k_coco"
-
-# RF-DETR uses "valid" not "val"
-SPLIT_MAP = {"train": "train", "val": "valid"}
+SPLIT_MAP = {"train": "train", "val": "valid"}  # RF-DETR uses "valid" not "val"
 
 
 def convert_split(split: str) -> dict:
-    """Convert one BDD100K split to COCO JSON and return stats."""
     coco_split = SPLIT_MAP[split]
     out_dir = COCO_BASE / coco_split
     out_dir.mkdir(parents=True, exist_ok=True)
 
-    coco_images = []
-    coco_annotations = []
+    coco_images, coco_annotations = [], []
     coco_categories = [
         {"id": i, "name": cls, "supercategory": cls}
         for i, cls in enumerate(DETECTION_CLASSES)
@@ -36,12 +26,10 @@ def convert_split(split: str) -> dict:
 
     ann_id = 0
     stats = {cls: 0 for cls in DETECTION_CLASSES}
-
     raw = json.loads(LABEL_FILES[split].read_text())
 
     for img_id, entry in enumerate(tqdm(raw, desc=f"Converting {split}")):
         img_name = entry["name"]
-
         coco_images.append(
             {
                 "id": img_id,
@@ -68,13 +56,10 @@ def convert_split(split: str) -> dict:
             y1 = max(0.0, min(float(b["y1"]), IMG_HEIGHT))
             x2 = max(0.0, min(float(b["x2"]), IMG_WIDTH))
             y2 = max(0.0, min(float(b["y2"]), IMG_HEIGHT))
-
             if x2 <= x1 or y2 <= y1:
                 continue
 
-            w = x2 - x1
-            h = y2 - y1
-
+            w, h = x2 - x1, y2 - y1
             coco_annotations.append(
                 {
                     "id": ann_id,
@@ -93,11 +78,9 @@ def convert_split(split: str) -> dict:
         "annotations": coco_annotations,
         "categories": coco_categories,
     }
-
     json_path = out_dir / "_annotations.coco.json"
     json_path.write_text(json.dumps(coco_dict))
     print(f"  Wrote {json_path} ({len(coco_images)} images, {ann_id} annotations)")
-
     return {
         "n_images": len(coco_images),
         "n_annotations": ann_id,
@@ -114,7 +97,6 @@ def main() -> None:
         print(f"  {stats['n_images']} images, {stats['n_annotations']} annotations")
         for cls, count in stats["class_counts"].items():
             print(f"    {cls}: {count:,}")
-
     print(f"\nTotal annotations: {total_anns:,}")
     print(f"Output directory: {COCO_BASE}")
 

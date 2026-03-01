@@ -684,54 +684,64 @@ def _render_gt_vs_pred(
             gt_matched.add(best_idx)
         pred_status.append((p, is_tp))
 
-    # Draw GT boxes: green=matched, yellow=missed
+    GT_COLOR = (0, 0.8, 0)       # green for all GT
+    PRED_COLOR = (0.2, 0.5, 1.0)  # blue for all predictions
+
+    # Draw GT boxes (green, dashed if missed)
     for i, (_, row) in enumerate(gt_df.iterrows()):
-        matched = i in gt_matched
-        color = (0, 0.8, 0) if matched else (1, 1, 0)
-        label = f"{row['category']} [{'GT' if matched else 'MISSED'}]"
+        missed = i not in gt_matched
         rect = patches.Rectangle(
             (row["x1"], row["y1"]),
             row["x2"] - row["x1"],
             row["y2"] - row["y1"],
             linewidth=2,
-            edgecolor=color,
+            edgecolor=GT_COLOR,
             facecolor="none",
+            linestyle="--" if missed else "-",
         )
         ax.add_patch(rect)
+        tag = f"{row['category']}" + (" MISSED" if missed else "")
         ax.text(
             row["x1"],
             row["y1"] - 5,
-            label,
+            tag,
             color="white",
             fontsize=7,
-            bbox=dict(boxstyle="round,pad=0.2", facecolor=color, alpha=0.7),
+            bbox=dict(boxstyle="round,pad=0.2", facecolor=GT_COLOR, alpha=0.7),
         )
 
-    # Draw predictions: orange=TP, red=FP (only show confident predictions)
+    # Draw predictions (blue, dashed if FP)
     _PRED_SCORE_THRESHOLD = 0.3
     visible_preds = [(p, tp) for p, tp in pred_status if p["score"] >= _PRED_SCORE_THRESHOLD]
     for p, is_tp in visible_preds:
-        color = (1, 0.6, 0) if is_tp else (1, 0, 0)
-        suffix = "" if is_tp else " [FP]"
-        label = f"{p['class']} {p['score']:.2f}{suffix}"
         rect = patches.Rectangle(
             (p["x1"], p["y1"]),
             p["x2"] - p["x1"],
             p["y2"] - p["y1"],
             linewidth=2,
-            edgecolor=color,
+            edgecolor=PRED_COLOR,
             facecolor="none",
-            linestyle="--" if is_tp else "-",
+            linestyle="-" if is_tp else "--",
         )
         ax.add_patch(rect)
+        tag = f"{p['class']} {p['score']:.2f}" + ("" if is_tp else " FP")
         ax.text(
             p["x2"],
             p["y1"] - 5,
-            label,
+            tag,
             color="white",
             fontsize=7,
-            bbox=dict(boxstyle="round,pad=0.2", facecolor=color, alpha=0.7),
+            bbox=dict(boxstyle="round,pad=0.2", facecolor=PRED_COLOR, alpha=0.7),
         )
+
+    # Legend
+    legend_patches = [
+        patches.Patch(edgecolor=GT_COLOR, facecolor="none", linewidth=2, label="Ground Truth"),
+        patches.Patch(edgecolor=GT_COLOR, facecolor="none", linewidth=2, linestyle="--", label="Missed GT"),
+        patches.Patch(edgecolor=PRED_COLOR, facecolor="none", linewidth=2, label="Prediction (TP)"),
+        patches.Patch(edgecolor=PRED_COLOR, facecolor="none", linewidth=2, linestyle="--", label="Prediction (FP)"),
+    ]
+    ax.legend(handles=legend_patches, loc="upper right", fontsize=8, framealpha=0.8)
 
     n_missed = len(gt_boxes) - len(gt_matched)
     ax.set_title(

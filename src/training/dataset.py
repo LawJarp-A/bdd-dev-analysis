@@ -1,12 +1,8 @@
-"""BDD100K object detection dataset with albumentations transforms.
-
-Outputs targets in normalised cxcywh format for RF-DETR / DETR models.
-"""
+"""BDD100K dataset with albumentations transforms for RF-DETR training."""
 
 import json
 import random
 from pathlib import Path
-from typing import Optional
 
 import albumentations as A
 import cv2
@@ -16,19 +12,12 @@ from torch.utils.data import DataLoader, Dataset
 
 from rfdetr.util.misc import NestedTensor
 
-from src.parser import (
-    DETECTION_CLASSES,
-    IMAGE_DIRS,
-    IMG_HEIGHT,
-    IMG_WIDTH,
-    LABEL_FILES,
-)
+from src.parser import DETECTION_CLASSES, IMAGE_DIRS, IMG_HEIGHT, IMG_WIDTH, LABEL_FILES
 
 CLASS_TO_ID = {cls: i for i, cls in enumerate(DETECTION_CLASSES)}
 
 
 def get_train_transforms(img_size: int = 640) -> A.Compose:
-    """Training augmentations with bbox-safe transforms."""
     return A.Compose(
         [
             A.HorizontalFlip(p=0.5),
@@ -39,15 +28,12 @@ def get_train_transforms(img_size: int = 640) -> A.Compose:
             ToTensorV2(),
         ],
         bbox_params=A.BboxParams(
-            format="pascal_voc",
-            label_fields=["class_labels"],
-            min_visibility=0.2,
+            format="pascal_voc", label_fields=["class_labels"], min_visibility=0.2
         ),
     )
 
 
 def get_val_transforms(img_size: int = 640) -> A.Compose:
-    """Validation transforms: resize + normalize."""
     return A.Compose(
         [
             A.Resize(height=img_size, width=img_size),
@@ -55,21 +41,23 @@ def get_val_transforms(img_size: int = 640) -> A.Compose:
             ToTensorV2(),
         ],
         bbox_params=A.BboxParams(
-            format="pascal_voc",
-            label_fields=["class_labels"],
-            min_visibility=0.2,
+            format="pascal_voc", label_fields=["class_labels"], min_visibility=0.2
         ),
     )
 
 
-def _xyxy_to_cxcywh_normalised(boxes: torch.Tensor, img_size: int) -> torch.Tensor:
-    """Convert [x1,y1,x2,y2] pixel coords to normalised [cx,cy,w,h] in [0,1]."""
+def _to_cxcywh(boxes: torch.Tensor, img_size: int) -> torch.Tensor:
+    """Convert [x1,y1,x2,y2] to normalised [cx,cy,w,h]."""
     x1, y1, x2, y2 = boxes.unbind(-1)
-    cx = (x1 + x2) / 2.0 / img_size
-    cy = (y1 + y2) / 2.0 / img_size
-    w = (x2 - x1) / img_size
-    h = (y2 - y1) / img_size
-    return torch.stack([cx, cy, w, h], dim=-1)
+    return torch.stack(
+        [
+            (x1 + x2) / 2.0 / img_size,
+            (y1 + y2) / 2.0 / img_size,
+            (x2 - x1) / img_size,
+            (y2 - y1) / img_size,
+        ],
+        dim=-1,
+    )
 
 
 class BDD100KDataset(Dataset):
@@ -78,7 +66,7 @@ class BDD100KDataset(Dataset):
     def __init__(
         self,
         split: str = "train",
-        transforms: Optional[A.Compose] = None,
+        transforms: A.Compose | None = None,
         img_size: int = 640,
         fraction: float = 1.0,
     ) -> None:
@@ -105,7 +93,6 @@ class BDD100KDataset(Dataset):
     def _load_labels(label_path: Path) -> tuple[list[dict], list[list[dict]]]:
         raw = json.loads(label_path.read_text())
         images, annotations = [], []
-
         for entry in raw:
             boxes = []
             for label in entry.get("labels", []):
@@ -124,7 +111,6 @@ class BDD100KDataset(Dataset):
                 boxes.append({"bbox": [x1, y1, x2, y2], "class_id": CLASS_TO_ID[cat]})
             images.append({"file_name": entry["name"]})
             annotations.append(boxes)
-
         return images, annotations
 
     def __len__(self) -> int:
@@ -142,7 +128,6 @@ class BDD100KDataset(Dataset):
 
         bboxes = [a["bbox"] for a in anns]
         class_labels = [a["class_id"] for a in anns]
-
         transformed = self.transforms(
             image=image, bboxes=bboxes, class_labels=class_labels
         )
@@ -151,9 +136,8 @@ class BDD100KDataset(Dataset):
         out_boxes = torch.as_tensor(transformed["bboxes"], dtype=torch.float32).reshape(
             -1, 4
         )
-
         if out_boxes.numel() > 0:
-            out_boxes = _xyxy_to_cxcywh_normalised(out_boxes, self.img_size)
+            out_boxes = _to_cxcywh(out_boxes, self.img_size)
 
         return image_tensor, {
             "boxes": out_boxes,
@@ -165,7 +149,6 @@ class BDD100KDataset(Dataset):
 def collate_fn(
     batch: list[tuple[torch.Tensor, dict]],
 ) -> tuple[NestedTensor, list[dict]]:
-    """Collate images into a NestedTensor (no padding needed, all same size)."""
     images, targets = zip(*batch)
     stacked = torch.stack(images)
     mask = torch.zeros(
@@ -181,5 +164,5 @@ if __name__ == "__main__":
     print(f"Images: {samples.tensors.shape}, mask: {samples.mask.shape}")
     for i, t in enumerate(targets):
         print(
-            f"  Image {i}: {t['boxes'].shape[0]} boxes (cxcywh), labels={t['labels'].tolist()}"
+            f"  Image {i}: {t['boxes'].shape[0]} boxes, labels={t['labels'].tolist()}"
         )

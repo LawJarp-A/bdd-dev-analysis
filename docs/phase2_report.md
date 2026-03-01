@@ -15,7 +15,7 @@
 
 ## Training Configuration
 
-Fine-tuning from COCO pretrained weights. 6 of 10 BDD100K classes overlap with COCO.
+Fine-tuning from COCO pretrained weights. 6 of 10 BDD100K classes overlap with COCO (car, bus, truck, person, bike, traffic light).
 
 | Parameter | Value |
 |---|---|

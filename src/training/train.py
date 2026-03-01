@@ -1,8 +1,4 @@
-"""Train RF-DETR on BDD100K with custom dataloader.
-
-Uses RF-DETR's training recipe (layer-wise LR decay, cosine schedule with
-warmup, EMA, AMP, gradient accumulation, gradient clipping).
-"""
+"""Train RF-DETR on BDD100K with custom dataloader."""
 
 import argparse
 import math
@@ -23,58 +19,43 @@ from src.training.dataset import BDD100KDataset, collate_fn
 
 RUNS_DIR = Path(__file__).resolve().parent.parent.parent / "runs"
 
+_MODEL_MAP = {
+    "base": "RFDETRBase",
+    "small": "RFDETRSmall",
+    "medium": "RFDETRMedium",
+    "large": "RFDETRLarge",
+}
+
 
 def parse_args() -> argparse.Namespace:
     p = argparse.ArgumentParser(description="Train RF-DETR on BDD100K")
-    p.add_argument(
-        "--model", default="large", choices=["base", "small", "medium", "large"]
-    )
+    p.add_argument("--model", default="large", choices=list(_MODEL_MAP))
     p.add_argument("--epochs", type=int, default=50)
     p.add_argument("--batch-size", type=int, default=16)
     p.add_argument("--grad-accum", type=int, default=1)
     p.add_argument("--lr", type=float, default=1e-4)
     p.add_argument("--warmup-epochs", type=float, default=3.0)
     p.add_argument(
-        "--fraction",
-        type=float,
-        default=1.0,
-        help="Fraction of training data (e.g. 0.01 for 1%%)",
+        "--fraction", type=float, default=1.0, help="Fraction of training data"
     )
     p.add_argument(
-        "--resume", type=str, default=None, help="Path to checkpoint to resume from"
+        "--resume", type=str, default=None, help="Checkpoint path to resume from"
     )
-    p.add_argument(
-        "--name",
-        type=str,
-        default="rfdetr_bdd100k",
-        help="Run name for output directory",
-    )
+    p.add_argument("--name", type=str, default="rfdetr_bdd100k", help="Run name")
     p.add_argument("--checkpoint-interval", type=int, default=5)
     return p.parse_args()
 
 
 def _get_model(size: str):
-    if size == "base":
-        from rfdetr import RFDETRBase
+    import rfdetr
 
-        return RFDETRBase()
-    if size == "small":
-        from rfdetr import RFDETRSmall
-
-        return RFDETRSmall()
-    if size == "medium":
-        from rfdetr import RFDETRMedium
-
-        return RFDETRMedium()
-    from rfdetr import RFDETRLarge
-
-    return RFDETRLarge()
+    cls = getattr(rfdetr, _MODEL_MAP[size])
+    return cls()
 
 
 def _build_lr_scheduler(
     optimizer, steps_per_epoch: int, epochs: int, warmup_epochs: float
 ):
-    """Cosine LR schedule with linear warmup."""
     total_steps = steps_per_epoch * epochs
     warmup_steps = int(steps_per_epoch * warmup_epochs)
 
@@ -96,7 +77,6 @@ def train(args: argparse.Namespace) -> None:
     print(f"Loading RF-DETR ({args.model}) ...")
     rfdetr = _get_model(args.model)
 
-    # Head has num_classes+1 (extra no-object slot); SetCriterion adds +1 internally
     n_classes = len(DETECTION_CLASSES)
     rfdetr.model.reinitialize_detection_head(n_classes + 1)
 
@@ -142,8 +122,7 @@ def train(args: argparse.Namespace) -> None:
         dataset, batch_sampler=batch_sampler, collate_fn=collate_fn, num_workers=2
     )
 
-    start_epoch = 0
-    best_loss = float("inf")
+    start_epoch, best_loss = 0, float("inf")
     if args.resume:
         ckpt = torch.load(args.resume, map_location="cpu", weights_only=False)
         model.load_state_dict(ckpt["model"])
@@ -159,22 +138,18 @@ def train(args: argparse.Namespace) -> None:
 
     print(f"\nTraining RF-DETR ({args.model}) on BDD100K")
     print(
-        f"  Dataset:       {len(dataset)} images"
+        f"  Dataset: {len(dataset)} images"
         + (f" ({args.fraction:.0%} subset)" if args.fraction < 1 else "")
     )
-    print(f"  Epochs:        {args.epochs}")
     print(
-        f"  Batch size:    {effective_batch} (bs={args.batch_size} x accum={args.grad_accum})"
+        f"  Epochs: {args.epochs}, batch: {effective_batch} (bs={args.batch_size} x accum={args.grad_accum})"
     )
-    print(f"  Steps/epoch:   {steps_per_epoch}")
-    print(f"  LR:            {args.lr}  (cosine, warmup={args.warmup_epochs} epochs)")
-    print(f"  Resolution:    {img_size}")
-    print(f"  Device:        {device}")
-    print(f"  AMP:           {use_amp}")
-    print(f"  Output:        {output_dir}\n")
+    print(f"  LR: {args.lr} (cosine, warmup={args.warmup_epochs} epochs)")
+    print(f"  Resolution: {img_size}, device: {device}, AMP: {use_amp}")
+    print(f"  Output: {output_dir}\n")
 
     weight_dict = criterion.weight_dict
-    sub_batch = args.batch_size  # per grad-accum step
+    sub_batch = args.batch_size
 
     for epoch in range(start_epoch, args.epochs):
         model.train()
@@ -185,12 +160,8 @@ def train(args: argparse.Namespace) -> None:
             samples = samples.to(device)
 
             for i in range(args.grad_accum):
-                s = i * sub_batch
-                e = s + sub_batch
-                sub_samples_tensors = samples.tensors[s:e]
-                sub_mask = samples.mask[s:e]
-
-                sub_samples = NestedTensor(sub_samples_tensors, sub_mask)
+                s, e = i * sub_batch, (i + 1) * sub_batch
+                sub_samples = NestedTensor(samples.tensors[s:e], samples.mask[s:e])
                 sub_targets = [
                     {k: v.to(device) for k, v in t.items()} for t in targets[s:e]
                 ]
@@ -205,7 +176,6 @@ def train(args: argparse.Namespace) -> None:
                         for k in loss_dict
                         if k in weight_dict
                     )
-
                 scaler.scale(loss).backward()
 
             loss_value = loss.item() * args.grad_accum
@@ -227,9 +197,7 @@ def train(args: argparse.Namespace) -> None:
                 avg = epoch_loss / (step + 1)
                 lr_now = optimizer.param_groups[0]["lr"]
                 print(
-                    f"  [Epoch {epoch+1}/{args.epochs}] "
-                    f"Step {step+1:>4d}/{steps_per_epoch}  "
-                    f"loss={loss_value:.4f}  avg={avg:.4f}  lr={lr_now:.2e}"
+                    f"  [Epoch {epoch+1}/{args.epochs}] Step {step+1:>4d}/{steps_per_epoch}  loss={loss_value:.4f}  avg={avg:.4f}  lr={lr_now:.2e}"
                 )
 
         avg_epoch_loss = epoch_loss / max(steps_per_epoch, 1)
@@ -246,10 +214,8 @@ def train(args: argparse.Namespace) -> None:
         }
 
         torch.save(ckpt_data, output_dir / "checkpoint.pth")
-
         if (epoch + 1) % args.checkpoint_interval == 0:
             torch.save(ckpt_data, output_dir / f"checkpoint{epoch:04d}.pth")
-
         if avg_epoch_loss < best_loss:
             best_loss = avg_epoch_loss
             ckpt_data["best_loss"] = best_loss
@@ -260,8 +226,7 @@ def train(args: argparse.Namespace) -> None:
 
 
 def main() -> None:
-    args = parse_args()
-    train(args)
+    train(parse_args())
 
 
 if __name__ == "__main__":
