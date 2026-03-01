@@ -78,6 +78,26 @@ def overview_tab(df: pd.DataFrame) -> None:
     st.subheader("Co-occurrence Matrix")
     _show_fig(analysis.plot_cooccurrence(df))
 
+    cooc = analysis.cooccurrence_matrix(df)
+    # Find the top co-occurring pair (off-diagonal)
+    np.fill_diagonal(cooc.values, 0)
+    max_idx = np.unravel_index(cooc.values.argmax(), cooc.shape)
+    top_pair = (cooc.index[max_idx[0]], cooc.columns[max_idx[1]])
+    top_count = cooc.values[max_idx]
+
+    st.markdown(
+        f"""
+**Key takeaways from the co-occurrence matrix:**
+- **{top_pair[0]}** and **{top_pair[1]}** co-occur most frequently ({top_count:,} images),
+  which makes sense as both are common in typical driving scenes.
+- **Car** dominates co-occurrences with almost every class, reflecting its prevalence on roads.
+- **Traffic lights** and **traffic signs** frequently appear together, as they are
+  clustered at intersections.
+- **Rare classes** (train, motor) have low co-occurrence counts across the board,
+  indicating they appear in more isolated or specialized scenes.
+"""
+    )
+
     st.subheader("Train/Val Split Balance")
     chi2_result = analysis.split_balance_chi2(df)
     st.write(
@@ -113,6 +133,14 @@ def class_deep_dive_tab(df: pd.DataFrame) -> None:
     _show_fig(analysis.plot_objects_per_image(df))
 
     st.subheader("Occlusion & Truncation by Class")
+    st.markdown(
+        """
+- **Occlusion %** — percentage of objects in each class that are partially hidden
+  behind another object (e.g. a person behind a car).
+- **Truncation %** — percentage of objects in each class that extend beyond the
+  image boundary, so only part of the object is visible.
+"""
+    )
     _show_fig(analysis.plot_occlusion_truncation(df))
 
     st.divider()
@@ -152,24 +180,23 @@ def _render_image_with_boxes(
     class_colors = {cls: colors[i] for i, cls in enumerate(DETECTION_CLASSES)}
 
     for idx, row in img_data.iterrows():
+        is_flagged = highlight_indices is not None and idx in highlight_indices
+
         if highlight_indices is None:
             # Normal mode: all boxes shown with class-specific colors
-            is_highlighted = True
             color = class_colors.get(row["category"], (1, 0, 0))
-            linewidth = 2
-            alpha = 0.7
-        elif idx in highlight_indices:
+            linewidth, alpha, fill_alpha = 2, 0.7, 0.0
+            show_label = True
+        elif is_flagged:
             # Highlight mode: flagged box in bold red
-            is_highlighted = True
             color = (1, 0, 0)
-            linewidth = 3
-            alpha = 0.9
+            linewidth, alpha, fill_alpha = 3, 0.9, 0.25
+            show_label = True
         else:
             # Highlight mode: non-flagged box in faded gray
-            is_highlighted = False
             color = (0.6, 0.6, 0.6)
-            linewidth = 1
-            alpha = 0.3
+            linewidth, alpha, fill_alpha = 1, 0.3, 0.0
+            show_label = False
 
         rect = patches.Rectangle(
             (row["x1"], row["y1"]),
@@ -177,12 +204,40 @@ def _render_image_with_boxes(
             row["height"],
             linewidth=linewidth,
             edgecolor=color,
-            facecolor="none",
-            alpha=alpha,
+            facecolor=color if fill_alpha > 0 else "none",
+            alpha=fill_alpha if fill_alpha > 0 else alpha,
         )
         ax.add_patch(rect)
 
-        if is_highlighted:
+        # Re-draw the edge on top so it stays crisp over the fill
+        if fill_alpha > 0:
+            edge_rect = patches.Rectangle(
+                (row["x1"], row["y1"]),
+                row["width"],
+                row["height"],
+                linewidth=linewidth,
+                edgecolor=color,
+                facecolor="none",
+                alpha=alpha,
+            )
+            ax.add_patch(edge_rect)
+
+        # For small flagged boxes, add a circle marker so they are easy to spot
+        if is_flagged and max(row["width"], row["height"]) < 60:
+            cx = row["x1"] + row["width"] / 2
+            cy = row["y1"] + row["height"] / 2
+            radius = max(30, max(row["width"], row["height"]))
+            circle = patches.Circle(
+                (cx, cy),
+                radius=radius,
+                linewidth=2,
+                edgecolor="yellow",
+                facecolor="none",
+                linestyle="--",
+            )
+            ax.add_patch(circle)
+
+        if show_label:
             ax.text(
                 row["x1"],
                 row["y1"] - 5,
@@ -236,63 +291,66 @@ def _show_anomaly_sample(
 # ---------------------------------------------------------------------------
 
 
-def _anomaly_category_summary(anomaly_df: pd.DataFrame) -> pd.DataFrame:
-    """Group anomalous boxes by category with counts, sorted descending."""
-    return (
-        anomaly_df.groupby("category")
-        .size()
-        .sort_values(ascending=False)
-        .reset_index(name="count")
-    )
-
-
 def anomalies_tab(df: pd.DataFrame) -> None:
-    """Anomaly detection page with explanations and highlighted sample images."""
+    """Anomaly detection page with per-class pattern analysis."""
     st.header("Anomalies")
 
-    total = max(len(df), 1)
-
-    # --- Per-class outliers ---
-    st.subheader("Per-Class Size Outliers (5th / 95th percentile)")
-    st.write(
-        "Boxes that are unusually small or large **for their class** "
-        "(e.g. a 50 px\u00b2 car is an outlier, but a 50 px\u00b2 traffic light isn't). "
-        "Could be annotation errors, extreme distances, or unusual viewpoints."
+    selected_class = st.selectbox(
+        "Select Class", sorted(df["category"].unique()), key="anomaly_class"
     )
-    outliers = analysis.per_class_outliers(df, column="area")
-    if not outliers.empty:
-        summary = (
-            outliers.groupby(["category", "outlier_type"])
-            .size()
-            .unstack(fill_value=0)
-            .reset_index()
+    class_df = df[df["category"] == selected_class]
+
+    st.divider()
+
+    # --- 1. Occlusion & Truncation anomalies ---
+    st.subheader("1. Occluded + Truncated (double-degraded)")
+    st.write(
+        "Boxes that are **both occluded AND truncated** — partially hidden "
+        "behind another object *and* cut off by the frame edge. These are the "
+        "hardest cases for any detector."
+    )
+    double_deg = analysis.double_degraded(class_df)
+    col1, col2, col3 = st.columns(3)
+    col1.metric("Total boxes", f"{len(class_df):,}")
+    col2.metric("Double-degraded", f"{len(double_deg):,}")
+    col3.metric("Rate", f"{len(double_deg) / max(len(class_df), 1) * 100:.1f}%")
+    if not double_deg.empty:
+        _show_anomaly_sample(double_deg, df, key="double_deg_sample")
+
+    st.divider()
+
+    # --- 2. Crowding anomalies ---
+    st.subheader("2. Crowding Anomalies")
+    st.write(
+        f"Images where **{selected_class}** appears far more often than usual "
+        f"(> mean + 2×std). These crowded scenes stress NMS and may cause "
+        f"missed detections."
+    )
+    crowded = analysis.crowding_outliers(df)
+    crowded_for_class = crowded[crowded["category"] == selected_class] if not crowded.empty else crowded
+    if not crowded_for_class.empty:
+        n_images = crowded_for_class["image_name"].nunique()
+        avg_count = crowded_for_class.groupby("image_name").size().mean()
+        class_mean = df[df["category"] == selected_class].groupby("image_name").size().mean()
+        st.write(
+            f"**{n_images:,}** images with abnormally many **{selected_class}** "
+            f"(avg **{avg_count:.0f}** per image vs typical **{class_mean:.1f}**)."
         )
-        st.dataframe(summary)
-        _show_anomaly_sample(outliers, df, key="outlier_sample")
+        _show_anomaly_sample(crowded_for_class, df, key="crowding_sample")
+    else:
+        st.success(f"No crowding anomalies for **{selected_class}**.")
 
-    # --- Tiny & huge boxes ---
-    st.subheader("Extreme Size Boxes")
-    tiny = analysis.tiny_boxes(df)
-    huge = analysis.huge_boxes(df)
-    st.write(
-        f"**{len(tiny):,}** boxes ({len(tiny) / total * 100:.1f}%) are under 1% of image area "
-        f"(far-range objects). **{len(huge):,}** exceed 80% (very close-range). "
-        f"Models need multi-scale features (e.g. FPN) to handle both extremes."
-    )
-    if not tiny.empty:
-        st.dataframe(_anomaly_category_summary(tiny))
-        _show_anomaly_sample(tiny, df, key="tiny_sample")
+    st.divider()
 
-    # --- Extreme aspect ratios ---
-    st.subheader("Extreme Aspect Ratios (< 0.1 or > 10)")
-    extreme = analysis.extreme_aspect_ratios(df)
+    # --- 3. Extreme aspect ratios (per class) ---
+    st.subheader("3. Extreme Aspect Ratios (< 0.1 or > 10)")
+    extreme = analysis.extreme_aspect_ratios(class_df)
     st.write(
-        f"**{len(extreme):,}** boxes ({len(extreme) / total * 100:.2f}%) with extreme aspect ratios. "
-        f"Usually partial objects at frame edges or annotation artifacts. "
-        f"Negligible training impact, but worth reviewing."
+        f"**{len(extreme):,}** **{selected_class}** boxes with extreme aspect ratios "
+        f"({len(extreme) / max(len(class_df), 1) * 100:.2f}%). "
+        f"Usually partial objects at frame edges or annotation artifacts."
     )
     if not extreme.empty:
-        st.dataframe(_anomaly_category_summary(extreme))
         _show_anomaly_sample(extreme, df, key="extreme_sample")
 
 
@@ -610,18 +668,17 @@ def _render_gt_vs_pred(
     preds_sorted = sorted(pred_list, key=lambda p: p["score"], reverse=True)
 
     # Greedy match predictions to GT
-    gt_matched = set()
-    pred_status = []
+    gt_matched: set[int] = set()
+    pred_status: list[tuple[dict, bool]] = []
     for p in preds_sorted:
         pb = [p["x1"], p["y1"], p["x2"], p["y2"]]
-        best_iou, best_idx = 0, -1
+        best_iou, best_idx = 0.0, -1
         for i, gb in enumerate(gt_boxes):
             if i in gt_matched:
                 continue
-            iou_val = _iou(pb, gb)
+            iou_val = _iou(pb, list(gb))
             if iou_val > best_iou:
-                best_iou = iou_val
-                best_idx = i
+                best_iou, best_idx = iou_val, i
         is_tp = best_iou >= 0.5 and best_idx >= 0
         if is_tp:
             gt_matched.add(best_idx)
@@ -650,14 +707,13 @@ def _render_gt_vs_pred(
             bbox=dict(boxstyle="round,pad=0.2", facecolor=color, alpha=0.7),
         )
 
-    # Draw predictions: orange=TP, red=FP
-    n_shown_preds = 0
-    for p, is_tp in pred_status:
-        if p["score"] < 0.3:
-            continue
-        n_shown_preds += 1
+    # Draw predictions: orange=TP, red=FP (only show confident predictions)
+    _PRED_SCORE_THRESHOLD = 0.3
+    visible_preds = [(p, tp) for p, tp in pred_status if p["score"] >= _PRED_SCORE_THRESHOLD]
+    for p, is_tp in visible_preds:
         color = (1, 0.6, 0) if is_tp else (1, 0, 0)
-        label = f"{p['class']} {p['score']:.2f}" + ("" if is_tp else " [FP]")
+        suffix = "" if is_tp else " [FP]"
+        label = f"{p['class']} {p['score']:.2f}{suffix}"
         rect = patches.Rectangle(
             (p["x1"], p["y1"]),
             p["x2"] - p["x1"],
@@ -679,9 +735,47 @@ def _render_gt_vs_pred(
 
     n_missed = len(gt_boxes) - len(gt_matched)
     ax.set_title(
-        f"{img_path.name} | GT: {len(gt_boxes)}, Preds: {n_shown_preds}, Missed: {n_missed}"
+        f"{img_path.name} | GT: {len(gt_boxes)}, Preds: {len(visible_preds)}, Missed: {n_missed}"
     )
     ax.axis("off")
+    plt.tight_layout()
+    return fig
+
+
+def _dual_axis_bar_line(
+    x_labels: list[str],
+    bar_data: list[tuple[np.ndarray, str, str]],
+    line_values: np.ndarray,
+    line_label: str,
+    bar_ylabel: str,
+    line_ylabel: str,
+    title: str,
+    bar_width: float = 0.25,
+) -> plt.Figure:
+    """Create a dual-axis chart with grouped bars (left axis) and a line (right axis).
+
+    bar_data: list of (values, label, color) tuples for grouped bars.
+    """
+    fig, ax = plt.subplots(figsize=(10, 5))
+    x = np.arange(len(x_labels))
+    n_bars = len(bar_data)
+    offsets = np.linspace(-(n_bars - 1) / 2, (n_bars - 1) / 2, n_bars) * bar_width
+
+    for offset, (values, label, color) in zip(offsets, bar_data):
+        ax.bar(x + offset, values, bar_width, label=label, color=color, alpha=0.6)
+
+    ax2 = ax.twinx()
+    ax2.plot(x, line_values, "o-", linewidth=2, markersize=8, label=line_label, color="red")
+
+    ax.set_xticks(x)
+    ax.set_xticklabels(x_labels, rotation=45, ha="right")
+    ax.set_ylabel(bar_ylabel)
+    ax2.set_ylabel(line_ylabel)
+    ax.set_title(title)
+
+    lines1, labels1 = ax.get_legend_handles_labels()
+    lines2, labels2 = ax2.get_legend_handles_labels()
+    ax.legend(lines1 + lines2, labels1 + labels2, loc="upper right")
     plt.tight_layout()
     return fig
 
@@ -783,10 +877,30 @@ def model_evaluation_tab(df: pd.DataFrame) -> None:
     plt.tight_layout()
     _show_fig(fig)
 
-    # --- Failure Analysis section (same cache) ---
-    st.subheader("Hardest Conditions (highest failure rate)")
-    st.caption("Failure = image where model recall < 0.5")
-    st.dataframe(eval_results["clusters"].head(15), hide_index=True)
+    # --- Failure Clustering ---
+    st.subheader("Failure Clustering by Condition")
+    st.caption("Failure = image where model recall < 0.5 for the selected class")
+
+    failure_class = st.selectbox(
+        "Class", ["All Classes"] + DETECTION_CLASSES, key="fail_cluster_class"
+    )
+    if failure_class == "All Classes":
+        st.dataframe(eval_results["clusters"].head(15), hide_index=True)
+    else:
+        per_class_clusters = eval_results.get("per_class_clusters")
+        if per_class_clusters is not None and not per_class_clusters.empty:
+            filtered = per_class_clusters[
+                per_class_clusters["category"] == failure_class
+            ].sort_values("failure_rate", ascending=False)
+            if not filtered.empty:
+                st.dataframe(filtered.head(15), hide_index=True)
+            else:
+                st.info(f"No failure clusters for **{failure_class}** with enough samples.")
+        else:
+            st.info(
+                "Per-class clusters not computed yet. "
+                "Re-run: `uv run python -m src.evaluation.metrics`"
+            )
 
     st.subheader("Phase 1 Data Features vs Model Recall")
     st.caption(
@@ -794,7 +908,178 @@ def model_evaluation_tab(df: pd.DataFrame) -> None:
     )
     st.dataframe(eval_results["correlation_table"], hide_index=True)
 
-    # GT vs Predictions browser
+    # --- Phase 1 Insights → Model Impact ---
+    st.subheader("Phase 1 Insights → Model Impact")
+    st.write(
+        "Connecting data analysis findings from Phase 1 to actual model performance."
+    )
+
+    pc = coco["per_class"].copy()
+    train_df = df[df["split"] == "train"]
+    val_df = df[df["split"] == "val"]
+
+    # 1. Class imbalance → AP
+    st.markdown("**Class Imbalance → AP@50**")
+    st.caption(
+        "Does having more training/validation samples lead to higher AP? "
+        "Classes with very few samples (train, motor) may suffer."
+    )
+    train_counts = train_df.groupby("category").size().reset_index(name="train_count")
+    val_counts = val_df.groupby("category").size().reset_index(name="val_count")
+    class_counts = train_counts.merge(val_counts, on="category", how="outer").fillna(0)
+    class_counts[["train_count", "val_count"]] = class_counts[["train_count", "val_count"]].astype(int)
+    merged = pc.merge(class_counts, left_on="class", right_on="category", how="left")
+    _show_fig(
+        _dual_axis_bar_line(
+            x_labels=merged["class"].tolist(),
+            bar_data=[
+                (merged["train_count"].values, "Train count", "steelblue"),
+                (merged["val_count"].values, "Val count", "mediumseagreen"),
+            ],
+            line_values=merged["AP50"].values,
+            line_label="AP@50",
+            bar_ylabel="Sample Count",
+            line_ylabel="AP@50",
+            title="Train & Val Sample Count vs AP@50",
+        )
+    )
+
+    # 2. Occlusion/truncation rate → AP
+    st.markdown("**Occlusion & Truncation Rate → AP@50**")
+    st.caption(
+        "Classes with high occlusion or truncation rates in the training data "
+        "may be harder for the model to detect."
+    )
+    occ_rates = (
+        train_df.groupby("category")
+        .agg(occlusion_pct=("occluded", "mean"), truncation_pct=("truncated", "mean"))
+        .reset_index()
+    )
+    occ_rates[["occlusion_pct", "truncation_pct"]] *= 100
+    merged2 = pc.merge(occ_rates, left_on="class", right_on="category", how="left")
+    _show_fig(
+        _dual_axis_bar_line(
+            x_labels=merged2["class"].tolist(),
+            bar_data=[
+                (merged2["occlusion_pct"].values, "Occlusion %", "coral"),
+                (merged2["truncation_pct"].values, "Truncation %", "gold"),
+            ],
+            line_values=merged2["AP50"].values,
+            line_label="AP@50",
+            bar_ylabel="Rate (%)",
+            line_ylabel="AP@50",
+            title="Occlusion/Truncation Rate vs AP@50",
+        )
+    )
+
+    # 3. Weather/time → mean recall
+    st.markdown("**Weather & Time-of-Day → Mean Recall**")
+    st.caption(
+        "Phase 1 found clear+daytime dominate training data. "
+        "Do under-represented conditions hurt model recall?"
+    )
+    failure_df = eval_results["failure_df"]
+    col1, col2 = st.columns(2)
+    with col1:
+        weather_recall = (
+            failure_df.groupby("weather")["recall"]
+            .mean()
+            .sort_values()
+            .reset_index()
+        )
+        fig, ax = plt.subplots(figsize=(6, 4))
+        ax.barh(weather_recall["weather"], weather_recall["recall"], color="steelblue")
+        ax.set_xlabel("Mean Recall")
+        ax.set_title("Recall by Weather")
+        ax.set_xlim(0, 1)
+        plt.tight_layout()
+        _show_fig(fig)
+    with col2:
+        time_recall = (
+            failure_df.groupby("timeofday")["recall"]
+            .mean()
+            .sort_values()
+            .reset_index()
+        )
+        fig, ax = plt.subplots(figsize=(6, 4))
+        ax.barh(time_recall["timeofday"], time_recall["recall"], color="coral")
+        ax.set_xlabel("Mean Recall")
+        ax.set_title("Recall by Time of Day")
+        ax.set_xlim(0, 1)
+        plt.tight_layout()
+        _show_fig(fig)
+
+    # --- Suggested Improvements ---
+    st.subheader("Suggested Improvements")
+    st.write(
+        "Data-driven recommendations based on the evaluation results above."
+    )
+
+    recommendations = []
+
+    # Build a quick lookup: class name -> training sample count
+    train_count_map = dict(zip(class_counts["category"], class_counts["train_count"]))
+    avg_ap = pc["AP50"].mean()
+
+    for _, row in pc.iterrows():
+        cls = row["class"]
+        train_n = int(train_count_map.get(cls, 0))
+
+        if row["AP50"] < 0.3 and train_n < 5000:
+            recommendations.append(
+                {
+                    "Finding": f"**{cls}** has low AP@50 ({row['AP50']:.3f}) with only {train_n:,} training samples",
+                    "Evidence": "Class imbalance — rare classes get fewer gradient updates",
+                    "Recommendation": "Use class-balanced focal loss or oversample this class during training",
+                }
+            )
+
+        if row["AP_large"] > 0 and row["AP_small"] < row["AP_large"] * 0.3:
+            recommendations.append(
+                {
+                    "Finding": f"**{cls}** AP_small ({row['AP_small']:.3f}) << AP_large ({row['AP_large']:.3f})",
+                    "Evidence": "Small instances are missed far more often than large ones",
+                    "Recommendation": "Add multi-scale augmentation (random crop/resize) or tune FPN feature levels",
+                }
+            )
+
+    for _, row in merged2.iterrows():
+        if row["occlusion_pct"] > 50 and row["AP50"] < avg_ap:
+            recommendations.append(
+                {
+                    "Finding": f"**{row['class']}** has {row['occlusion_pct']:.0f}% occlusion rate and below-avg AP ({row['AP50']:.3f})",
+                    "Evidence": "High occlusion in training data correlates with lower detection performance",
+                    "Recommendation": "Add occlusion-aware augmentation (random erasing, cutout) to simulate partial visibility",
+                }
+            )
+
+    # Check weather/time conditions
+    for _, row in weather_recall.iterrows():
+        if row["recall"] < 0.4:
+            recommendations.append(
+                {
+                    "Finding": f"Mean recall in **{row['weather']}** weather is only {row['recall']:.3f}",
+                    "Evidence": "Under-represented weather condition leads to poor generalization",
+                    "Recommendation": f"Augment with synthetic {row['weather']} effects (brightness/contrast jitter, rain overlay) or collect more data",
+                }
+            )
+
+    for _, row in time_recall.iterrows():
+        if row["recall"] < 0.4:
+            recommendations.append(
+                {
+                    "Finding": f"Mean recall at **{row['timeofday']}** is only {row['recall']:.3f}",
+                    "Evidence": "Model struggles in this lighting condition due to fewer training samples",
+                    "Recommendation": f"Add {row['timeofday']}-specific augmentation (gamma correction, darkness simulation) or balance sampling",
+                }
+            )
+
+    if recommendations:
+        st.dataframe(pd.DataFrame(recommendations), hide_index=True)
+    else:
+        st.success("No critical issues detected — model performs reasonably across all conditions.")
+
+    # --- GT vs Predictions browser ---
     st.subheader("GT vs Predictions Browser")
     preds_by_img = load_predictions()
     if not preds_by_img:

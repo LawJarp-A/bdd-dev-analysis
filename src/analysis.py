@@ -54,14 +54,6 @@ def occlusion_truncation_rates(df: pd.DataFrame) -> pd.DataFrame:
 # -- Anomaly Detection -------------------------------------------------------
 
 
-def tiny_boxes(df: pd.DataFrame, threshold: float = 0.01) -> pd.DataFrame:
-    return df[df["area"] < threshold * IMG_AREA]
-
-
-def huge_boxes(df: pd.DataFrame, threshold: float = 0.80) -> pd.DataFrame:
-    return df[df["area"] > threshold * IMG_AREA]
-
-
 def extreme_aspect_ratios(
     df: pd.DataFrame, low: float = 0.1, high: float = 10.0
 ) -> pd.DataFrame:
@@ -69,23 +61,67 @@ def extreme_aspect_ratios(
 
 
 def per_class_outliers(
-    df: pd.DataFrame, column: str = "area", low_pct: float = 5, high_pct: float = 95
+    df: pd.DataFrame, column: str = "area", k: float = 1.5
 ) -> pd.DataFrame:
-    """Flag boxes outside per-class percentile range. Adds 'outlier_type' column."""
+    """Flag boxes outside per-class IQR fences. Adds 'outlier_type' column.
+
+    For each class independently:
+      lower fence = Q1 - k * IQR
+      upper fence = Q3 + k * IQR
+    This adapts to each class's actual distribution — a small traffic light
+    won't be flagged just because it's smaller than a car.
+    """
     parts = []
     for _, grp in df.groupby("category"):
-        lo, hi = np.percentile(grp[column], [low_pct, high_pct])
+        q1, q3 = np.percentile(grp[column], [25, 75])
+        iqr = q3 - q1
+        lo = q1 - k * iqr
+        hi = q3 + k * iqr
         for label, mask in [("small", grp[column] < lo), ("large", grp[column] > hi)]:
             s = grp[mask].copy()
             s["outlier_type"] = label
             parts.append(s)
-    return pd.concat(parts, ignore_index=True) if parts else pd.DataFrame()
+    return pd.concat(parts) if parts else pd.DataFrame()
+
+
+def double_degraded(df: pd.DataFrame) -> pd.DataFrame:
+    """Boxes that are both occluded AND truncated — hardest to detect."""
+    return df[df["occluded"].astype(bool) & df["truncated"].astype(bool)]
+
+
+def crowding_outliers(df: pd.DataFrame, k: float = 2.0) -> pd.DataFrame:
+    """Images where a single class appears far more often than typical (> mean + k*std)."""
+    counts = df.groupby(["image_name", "category"]).size().reset_index(name="count")
+    per_class_stats = counts.groupby("category")["count"].agg(["mean", "std"]).reset_index()
+    merged = counts.merge(per_class_stats, on="category")
+    merged["threshold"] = merged["mean"] + k * merged["std"]
+    flagged = merged[merged["count"] > merged["threshold"]]
+    if flagged.empty:
+        return pd.DataFrame()
+
+    # Return all boxes from flagged (image, category) pairs
+    keys = set(zip(flagged["image_name"], flagged["category"]))
+    mask = pd.Series(
+        [(img, cat) in keys for img, cat in zip(df["image_name"], df["category"])],
+        index=df.index,
+    )
+    result = df[mask].copy()
+
+    count_map = dict(zip(zip(flagged["image_name"], flagged["category"]), flagged["count"]))
+    result["class_count_in_image"] = [
+        count_map.get((img, cat), 0)
+        for img, cat in zip(result["image_name"], result["category"])
+    ]
+    return result
 
 
 # -- Plots -------------------------------------------------------------------
 
 
-def _new_fig(w=12, h=6):
+def _new_fig(
+    w: int = 12, h: int = 6
+) -> tuple[plt.Figure, plt.Axes]:
+    """Create a new matplotlib figure + axes pair."""
     return plt.subplots(figsize=(w, h))
 
 
@@ -112,6 +148,7 @@ def plot_bbox_area_distribution(df: pd.DataFrame) -> plt.Figure:
         data=df, x="category", y="area", order=sorted(df["category"].unique()), ax=ax
     )
     ax.set_title("Bounding Box Area Distribution by Class")
+    ax.set_ylabel("Area (px²)")
     ax.set_yscale("log")
     plt.xticks(rotation=45, ha="right")
     plt.tight_layout()
@@ -219,8 +256,14 @@ def truncated_person_edge(df: pd.DataFrame, edge_margin: int = 20) -> pd.DataFra
 
 
 def _filter_by_metric_and_category(
-    df, metrics_df, col, threshold, categories, ego_lane_only=False
-):
+    df: pd.DataFrame,
+    metrics_df: pd.DataFrame,
+    col: str,
+    threshold: float,
+    categories: set[str] | frozenset[str],
+    ego_lane_only: bool = False,
+) -> pd.DataFrame:
+    """Return rows from images where *col* is below *threshold* and contain *categories*."""
     flagged = set(metrics_df.loc[metrics_df[col] < threshold, "image_name"])
     cat_mask = df["category"].isin(categories)
     if ego_lane_only and "in_ego_lane" in df.columns:
@@ -229,13 +272,25 @@ def _filter_by_metric_and_category(
     return df[df["image_name"].isin(target)]
 
 
-def blurry_with_pedestrians(df, metrics_df, blur_threshold=15.0, ego_lane_only=False):
+def blurry_with_pedestrians(
+    df: pd.DataFrame,
+    metrics_df: pd.DataFrame,
+    blur_threshold: float = 15.0,
+    ego_lane_only: bool = False,
+) -> pd.DataFrame:
+    """Images in the bottom tail of sharpness that contain pedestrians."""
     return _filter_by_metric_and_category(
         df, metrics_df, "blur_score", blur_threshold, {"person"}, ego_lane_only
     )
 
 
-def dark_with_vru(df, metrics_df, brightness_threshold=20.0, ego_lane_only=False):
+def dark_with_vru(
+    df: pd.DataFrame,
+    metrics_df: pd.DataFrame,
+    brightness_threshold: float = 20.0,
+    ego_lane_only: bool = False,
+) -> pd.DataFrame:
+    """Very dark images that contain vulnerable road users."""
     return _filter_by_metric_and_category(
         df,
         metrics_df,

@@ -1,8 +1,8 @@
 # Dataset and model weights
-data/
+data/*
 !data/predictions/
-data/predictions/*.json
-data/predictions/*.pkl
+data/predictions/*
+!data/predictions/eval_results.pkl
 *.pth
 *.pt
 *.onnx
