@@ -98,7 +98,11 @@ def convert_split(split: str) -> dict:
     json_path.write_text(json.dumps(coco_dict))
     print(f"  Wrote {json_path} ({len(coco_images)} images, {ann_id} annotations)")
 
-    return {"n_images": len(coco_images), "n_annotations": ann_id, "class_counts": stats}
+    return {
+        "n_images": len(coco_images),
+        "n_annotations": ann_id,
+        "class_counts": stats,
+    }
 
 
 def main() -> None:

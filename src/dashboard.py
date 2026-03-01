@@ -20,7 +20,11 @@ from PIL import Image  # noqa: E402
 
 from src import analysis  # noqa: E402
 from src.compute_image_metrics import METRICS_PATH  # noqa: E402
-from src.evaluation.metrics import COCO_ANN, PRED_JSON, load_cache as load_eval_cache  # noqa: E402
+from src.evaluation.metrics import (
+    COCO_ANN,
+    PRED_JSON,
+    load_cache as load_eval_cache,
+)  # noqa: E402
 from src.parser import (  # noqa: E402
     DETECTION_CLASSES,
     IMAGE_DIRS,
@@ -88,7 +92,12 @@ def overview_tab(df: pd.DataFrame) -> None:
     for attr in ["weather", "scene", "timeofday"]:
         counts = df.drop_duplicates(subset="image_name")[attr].value_counts()
         st.write(f"**{attr.title()}**")
-        st.dataframe(counts.reset_index().rename(columns={"index": attr, attr: "count", "count": "images"}), hide_index=True)
+        st.dataframe(
+            counts.reset_index().rename(
+                columns={"index": attr, attr: "count", "count": "images"}
+            ),
+            hide_index=True,
+        )
 
 
 # ---------------------------------------------------------------------------
@@ -210,7 +219,9 @@ def _show_anomaly_sample(
 
         if img_path.exists():
             _show_fig(
-                _render_image_with_boxes(img_path, img_data, highlight_indices=highlight_set)
+                _render_image_with_boxes(
+                    img_path, img_data, highlight_indices=highlight_set
+                )
             )
             st.caption(
                 f"Image: {img_name} | "
@@ -345,7 +356,8 @@ def safety_critical_tab(df: pd.DataFrame, metrics_df: pd.DataFrame | None) -> No
         title="Occluded Tiny Pedestrians Near Cars",
         explanation=(
             "The worst-case ADAS scenario: pedestrians that are **tiny** (<0.1% area), "
-            "**occluded**, near **cars**, and in **night or rain** — all at once." + ego_suffix
+            "**occluded**, near **cars**, and in **night or rain** — all at once."
+            + ego_suffix
         ),
         case_df=analysis.occluded_pedestrian_near_cars(df, ego_lane_only=ego_lane_only),
         full_df=df,
@@ -397,9 +409,7 @@ def safety_critical_tab(df: pd.DataFrame, metrics_df: pd.DataFrame | None) -> No
                 "Near-black frames where road users have almost no contrast — even human annotators struggle."
                 + ego_suffix
             ),
-            case_df=analysis.dark_with_vru(
-                df, metrics_df, ego_lane_only=ego_lane_only
-            ),
+            case_df=analysis.dark_with_vru(df, metrics_df, ego_lane_only=ego_lane_only),
             full_df=df,
             key="safety_dark",
         )
@@ -437,7 +447,9 @@ def safety_critical_tab(df: pd.DataFrame, metrics_df: pd.DataFrame | None) -> No
 # ---------------------------------------------------------------------------
 
 
-def _select_images(df: pd.DataFrame, mode: str, category: str | None = None, n: int = 20) -> list[str]:
+def _select_images(
+    df: pd.DataFrame, mode: str, category: str | None = None, n: int = 20
+) -> list[str]:
     """Return up to *n* image names based on the selected browse mode."""
     if mode == "Most Crowded":
         counts = df.groupby("image_name").size().sort_values(ascending=False)
@@ -479,8 +491,14 @@ def sample_browser_tab(df: pd.DataFrame) -> None:
     with col_mode:
         mode = st.selectbox(
             "Browse Mode",
-            ["Most Crowded", "Rare Classes", "Single-Class Images",
-             "Per-Class Outliers", "Highly Occluded", "Random"],
+            [
+                "Most Crowded",
+                "Rare Classes",
+                "Single-Class Images",
+                "Per-Class Outliers",
+                "Highly Occluded",
+                "Random",
+            ],
         )
     with col_class:
         class_filter = st.selectbox(
@@ -536,24 +554,40 @@ def load_predictions() -> dict:
     by_img = defaultdict(list)
     if pred_csv.exists():
         import csv
+
         with open(pred_csv) as f:
             for row in csv.DictReader(f):
-                x, y, w, h = float(row["x"]), float(row["y"]), float(row["w"]), float(row["h"])
-                by_img[id_to_name.get(int(row["image_id"]), "")].append({
-                    "x1": x, "y1": y, "x2": x + w, "y2": y + h,
-                    "class": DETECTION_CLASSES[int(row["category_id"])],
-                    "score": float(row["score"]),
-                })
+                x, y, w, h = (
+                    float(row["x"]),
+                    float(row["y"]),
+                    float(row["w"]),
+                    float(row["h"]),
+                )
+                by_img[id_to_name.get(int(row["image_id"]), "")].append(
+                    {
+                        "x1": x,
+                        "y1": y,
+                        "x2": x + w,
+                        "y2": y + h,
+                        "class": DETECTION_CLASSES[int(row["category_id"])],
+                        "score": float(row["score"]),
+                    }
+                )
     else:
         with open(PRED_JSON) as f:
             preds = json.load(f)
         for p in preds:
             x, y, w, h = p["bbox"]
-            by_img[id_to_name.get(p["image_id"], "")].append({
-                "x1": x, "y1": y, "x2": x + w, "y2": y + h,
-                "class": DETECTION_CLASSES[p["category_id"]],
-                "score": p["score"],
-            })
+            by_img[id_to_name.get(p["image_id"], "")].append(
+                {
+                    "x1": x,
+                    "y1": y,
+                    "x2": x + w,
+                    "y2": y + h,
+                    "class": DETECTION_CLASSES[p["category_id"]],
+                    "score": p["score"],
+                }
+            )
     return dict(by_img)
 
 
@@ -562,7 +596,9 @@ def load_predictions() -> dict:
 # ---------------------------------------------------------------------------
 
 
-def _render_gt_vs_pred(img_path: Path, gt_df: pd.DataFrame, pred_list: list[dict]) -> plt.Figure:
+def _render_gt_vs_pred(
+    img_path: Path, gt_df: pd.DataFrame, pred_list: list[dict]
+) -> plt.Figure:
     """Render image with GT (green) and predictions (orange=TP, red=FP), missed GT in yellow."""
     from src.evaluation.metrics import _iou
 
@@ -596,11 +632,23 @@ def _render_gt_vs_pred(img_path: Path, gt_df: pd.DataFrame, pred_list: list[dict
         matched = i in gt_matched
         color = (0, 0.8, 0) if matched else (1, 1, 0)
         label = f"{row['category']} [{'GT' if matched else 'MISSED'}]"
-        rect = patches.Rectangle((row["x1"], row["y1"]), row["x2"] - row["x1"], row["y2"] - row["y1"],
-                                  linewidth=2, edgecolor=color, facecolor="none")
+        rect = patches.Rectangle(
+            (row["x1"], row["y1"]),
+            row["x2"] - row["x1"],
+            row["y2"] - row["y1"],
+            linewidth=2,
+            edgecolor=color,
+            facecolor="none",
+        )
         ax.add_patch(rect)
-        ax.text(row["x1"], row["y1"] - 5, label, color="white", fontsize=7,
-                bbox=dict(boxstyle="round,pad=0.2", facecolor=color, alpha=0.7))
+        ax.text(
+            row["x1"],
+            row["y1"] - 5,
+            label,
+            color="white",
+            fontsize=7,
+            bbox=dict(boxstyle="round,pad=0.2", facecolor=color, alpha=0.7),
+        )
 
     # Draw predictions: orange=TP, red=FP
     n_shown_preds = 0
@@ -610,15 +658,29 @@ def _render_gt_vs_pred(img_path: Path, gt_df: pd.DataFrame, pred_list: list[dict
         n_shown_preds += 1
         color = (1, 0.6, 0) if is_tp else (1, 0, 0)
         label = f"{p['class']} {p['score']:.2f}" + ("" if is_tp else " [FP]")
-        rect = patches.Rectangle((p["x1"], p["y1"]), p["x2"] - p["x1"], p["y2"] - p["y1"],
-                                  linewidth=2, edgecolor=color, facecolor="none",
-                                  linestyle="--" if is_tp else "-")
+        rect = patches.Rectangle(
+            (p["x1"], p["y1"]),
+            p["x2"] - p["x1"],
+            p["y2"] - p["y1"],
+            linewidth=2,
+            edgecolor=color,
+            facecolor="none",
+            linestyle="--" if is_tp else "-",
+        )
         ax.add_patch(rect)
-        ax.text(p["x2"], p["y1"] - 5, label, color="white", fontsize=7,
-                bbox=dict(boxstyle="round,pad=0.2", facecolor=color, alpha=0.7))
+        ax.text(
+            p["x2"],
+            p["y1"] - 5,
+            label,
+            color="white",
+            fontsize=7,
+            bbox=dict(boxstyle="round,pad=0.2", facecolor=color, alpha=0.7),
+        )
 
     n_missed = len(gt_boxes) - len(gt_matched)
-    ax.set_title(f"{img_path.name} | GT: {len(gt_boxes)}, Preds: {n_shown_preds}, Missed: {n_missed}")
+    ax.set_title(
+        f"{img_path.name} | GT: {len(gt_boxes)}, Preds: {n_shown_preds}, Missed: {n_missed}"
+    )
     ax.axis("off")
     plt.tight_layout()
     return fig
@@ -630,7 +692,9 @@ def model_evaluation_tab(df: pd.DataFrame) -> None:
 
     eval_results = load_eval_results()
     if eval_results is None:
-        st.warning("Evaluation not yet computed. Run: `uv run python -m src.evaluation.run_inference` then `uv run python -m src.evaluation.metrics`")
+        st.warning(
+            "Evaluation not yet computed. Run: `uv run python -m src.evaluation.run_inference` then `uv run python -m src.evaluation.metrics`"
+        )
         return
 
     coco = eval_results["coco_metrics"]
@@ -646,7 +710,9 @@ def model_evaluation_tab(df: pd.DataFrame) -> None:
 
     # Per-class table
     st.subheader("Per-Class Performance")
-    st.dataframe(coco["per_class"].sort_values("AP50", ascending=False), hide_index=True)
+    st.dataframe(
+        coco["per_class"].sort_values("AP50", ascending=False), hide_index=True
+    )
 
     # PR Curves
     st.subheader("Precision-Recall Curves")
@@ -660,7 +726,11 @@ def model_evaluation_tab(df: pd.DataFrame) -> None:
         rec = np.array(data["recall"])
         valid = prec > -1
         if valid.any():
-            ax.plot(rec[valid], prec[valid], label=f"{cls_name} (AP={np.mean(prec[valid]):.3f})")
+            ax.plot(
+                rec[valid],
+                prec[valid],
+                label=f"{cls_name} (AP={np.mean(prec[valid]):.3f})",
+            )
     ax.set_xlabel("Recall")
     ax.set_ylabel("Precision")
     ax.set_title("Precision-Recall Curves (IoU=0.50)")
@@ -672,11 +742,21 @@ def model_evaluation_tab(df: pd.DataFrame) -> None:
 
     # Confusion Matrix
     st.subheader("Confusion Matrix")
-    st.caption("Rows = ground truth class, columns = predicted class. 'background' = missed detections.")
+    st.caption(
+        "Rows = ground truth class, columns = predicted class. 'background' = missed detections."
+    )
     cm = eval_results["confusion_matrix"]
     cm_norm = cm.div(cm.sum(axis=1).replace(0, 1), axis=0)
     fig, ax = plt.subplots(figsize=(12, 9))
-    sns.heatmap(cm_norm, annot=True, fmt=".2f", cmap="YlOrRd", ax=ax, xticklabels=True, yticklabels=True)
+    sns.heatmap(
+        cm_norm,
+        annot=True,
+        fmt=".2f",
+        cmap="YlOrRd",
+        ax=ax,
+        xticklabels=True,
+        yticklabels=True,
+    )
     ax.set_title("Confusion Matrix (row-normalized)")
     ax.set_ylabel("Ground Truth")
     ax.set_xlabel("Predicted")
@@ -685,7 +765,9 @@ def model_evaluation_tab(df: pd.DataFrame) -> None:
 
     # AP by size per class
     st.subheader("AP by Object Size")
-    st.caption("COCO size thresholds: small < 32x32 px, medium < 96x96 px, large >= 96x96 px")
+    st.caption(
+        "COCO size thresholds: small < 32x32 px, medium < 96x96 px, large >= 96x96 px"
+    )
     pc = coco["per_class"]
     fig, ax = plt.subplots(figsize=(12, 6))
     x = np.arange(len(pc))
@@ -707,7 +789,9 @@ def model_evaluation_tab(df: pd.DataFrame) -> None:
     st.dataframe(eval_results["clusters"].head(15), hide_index=True)
 
     st.subheader("Phase 1 Data Features vs Model Recall")
-    st.caption("Pearson/Spearman correlation between data characteristics and per-image recall")
+    st.caption(
+        "Pearson/Spearman correlation between data characteristics and per-image recall"
+    )
     st.dataframe(eval_results["correlation_table"], hide_index=True)
 
     # GT vs Predictions browser
@@ -727,8 +811,10 @@ def model_evaluation_tab(df: pd.DataFrame) -> None:
     if img_names:
         selected = st.selectbox("Image", img_names, key="fail_img")
         row = per_img[per_img["image_name"] == selected].iloc[0]
-        st.write(f"Precision: **{row['precision']:.3f}** | Recall: **{row['recall']:.3f}** | "
-                 f"GT: {row['gt_count']} | Preds: {row['pred_count']} | {row['weather']}, {row['timeofday']}")
+        st.write(
+            f"Precision: **{row['precision']:.3f}** | Recall: **{row['recall']:.3f}** | "
+            f"GT: {row['gt_count']} | Preds: {row['pred_count']} | {row['weather']}, {row['timeofday']}"
+        )
 
         img_path = IMAGE_DIRS["val"] / selected
         val_df = df[(df["image_name"] == selected) & (df["split"] == "val")]
@@ -736,7 +822,6 @@ def model_evaluation_tab(df: pd.DataFrame) -> None:
 
         if img_path.exists() and not val_df.empty:
             _show_fig(_render_gt_vs_pred(img_path, val_df, img_preds))
-
 
 
 # ---------------------------------------------------------------------------
@@ -753,8 +838,14 @@ def main() -> None:
     metrics_df = load_metrics()
 
     tab1, tab2, tab3, tab4, tab5, tab6 = st.tabs(
-        ["Overview", "Class Deep Dive", "Anomalies", "Safety-Critical Edge Cases",
-         "Sample Browser", "Model Evaluation"]
+        [
+            "Overview",
+            "Class Deep Dive",
+            "Anomalies",
+            "Safety-Critical Edge Cases",
+            "Sample Browser",
+            "Model Evaluation",
+        ]
     )
 
     with tab1:

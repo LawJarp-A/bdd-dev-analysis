@@ -14,7 +14,12 @@ DATA_DIR = Path(__file__).resolve().parent.parent.parent / "data"
 COCO_ANN = DATA_DIR / "bdd100k_coco" / "valid" / "_annotations.coco.json"
 VAL_IMG_DIR = DATA_DIR / "bdd100k_images_100k" / "bdd100k" / "images" / "100k" / "val"
 PRED_JSON = DATA_DIR / "predictions" / "val_predictions.json"
-DEFAULT_CKPT = Path(__file__).resolve().parent.parent.parent / "runs" / "rfdetr_bdd100k_5ep" / "checkpoint_best_ema.pth"
+DEFAULT_CKPT = (
+    Path(__file__).resolve().parent.parent.parent
+    / "runs"
+    / "rfdetr_bdd100k_5ep"
+    / "checkpoint_best_ema.pth"
+)
 
 
 def main():
@@ -36,11 +41,19 @@ def main():
         dets = model.predict(Image.open(img_path).convert("RGB"), threshold=0.01)
         for xyxy, cls_id, conf in zip(dets.xyxy, dets.class_id, dets.confidence):
             x1, y1, x2, y2 = xyxy.tolist()
-            results.append({
-                "image_id": img_id, "category_id": int(cls_id),
-                "bbox": [round(x1, 2), round(y1, 2), round(x2 - x1, 2), round(y2 - y1, 2)],
-                "score": round(float(conf), 4),
-            })
+            results.append(
+                {
+                    "image_id": img_id,
+                    "category_id": int(cls_id),
+                    "bbox": [
+                        round(x1, 2),
+                        round(y1, 2),
+                        round(x2 - x1, 2),
+                        round(y2 - y1, 2),
+                    ],
+                    "score": round(float(conf), 4),
+                }
+            )
 
     PRED_JSON.parent.mkdir(parents=True, exist_ok=True)
     with open(PRED_JSON, "w") as f:

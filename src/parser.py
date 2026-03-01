@@ -165,10 +165,12 @@ def annotate_ego_lane(
         if not polys:
             continue
 
-        foot_points = np.column_stack([
-            (group["x1"].values + group["x2"].values) / 2.0,
-            group["y2"].values,
-        ])
+        foot_points = np.column_stack(
+            [
+                (group["x1"].values + group["x2"].values) / 2.0,
+                group["y2"].values,
+            ]
+        )
 
         in_any = np.zeros(len(group), dtype=bool)
         for verts in polys:

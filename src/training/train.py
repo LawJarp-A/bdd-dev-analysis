@@ -26,18 +26,29 @@ RUNS_DIR = Path(__file__).resolve().parent.parent.parent / "runs"
 
 def parse_args() -> argparse.Namespace:
     p = argparse.ArgumentParser(description="Train RF-DETR on BDD100K")
-    p.add_argument("--model", default="large", choices=["base", "small", "medium", "large"])
+    p.add_argument(
+        "--model", default="large", choices=["base", "small", "medium", "large"]
+    )
     p.add_argument("--epochs", type=int, default=50)
     p.add_argument("--batch-size", type=int, default=16)
     p.add_argument("--grad-accum", type=int, default=1)
     p.add_argument("--lr", type=float, default=1e-4)
     p.add_argument("--warmup-epochs", type=float, default=3.0)
-    p.add_argument("--fraction", type=float, default=1.0,
-                   help="Fraction of training data (e.g. 0.01 for 1%%)")
-    p.add_argument("--resume", type=str, default=None,
-                   help="Path to checkpoint to resume from")
-    p.add_argument("--name", type=str, default="rfdetr_bdd100k",
-                   help="Run name for output directory")
+    p.add_argument(
+        "--fraction",
+        type=float,
+        default=1.0,
+        help="Fraction of training data (e.g. 0.01 for 1%%)",
+    )
+    p.add_argument(
+        "--resume", type=str, default=None, help="Path to checkpoint to resume from"
+    )
+    p.add_argument(
+        "--name",
+        type=str,
+        default="rfdetr_bdd100k",
+        help="Run name for output directory",
+    )
     p.add_argument("--checkpoint-interval", type=int, default=5)
     return p.parse_args()
 
@@ -45,18 +56,24 @@ def parse_args() -> argparse.Namespace:
 def _get_model(size: str):
     if size == "base":
         from rfdetr import RFDETRBase
+
         return RFDETRBase()
     if size == "small":
         from rfdetr import RFDETRSmall
+
         return RFDETRSmall()
     if size == "medium":
         from rfdetr import RFDETRMedium
+
         return RFDETRMedium()
     from rfdetr import RFDETRLarge
+
     return RFDETRLarge()
 
 
-def _build_lr_scheduler(optimizer, steps_per_epoch: int, epochs: int, warmup_epochs: float):
+def _build_lr_scheduler(
+    optimizer, steps_per_epoch: int, epochs: int, warmup_epochs: float
+):
     """Cosine LR schedule with linear warmup."""
     total_steps = steps_per_epoch * epochs
     warmup_steps = int(steps_per_epoch * warmup_epochs)
@@ -112,15 +129,18 @@ def train(args: argparse.Namespace) -> None:
     dataset = BDD100KDataset(split="train", img_size=img_size, fraction=args.fraction)
     effective_batch = args.batch_size * args.grad_accum
     steps_per_epoch = max(1, len(dataset) // effective_batch)
-    lr_scheduler = _build_lr_scheduler(optimizer, steps_per_epoch, args.epochs, args.warmup_epochs)
+    lr_scheduler = _build_lr_scheduler(
+        optimizer, steps_per_epoch, args.epochs, args.warmup_epochs
+    )
 
     ema = ModelEma(model, decay=0.9997)
     scaler = GradScaler(enabled=use_amp)
 
     sampler = RandomSampler(dataset)
     batch_sampler = BatchSampler(sampler, effective_batch, drop_last=True)
-    loader = DataLoader(dataset, batch_sampler=batch_sampler,
-                        collate_fn=collate_fn, num_workers=2)
+    loader = DataLoader(
+        dataset, batch_sampler=batch_sampler, collate_fn=collate_fn, num_workers=2
+    )
 
     start_epoch = 0
     best_loss = float("inf")
@@ -138,10 +158,14 @@ def train(args: argparse.Namespace) -> None:
         print(f"  Resumed from epoch {start_epoch}")
 
     print(f"\nTraining RF-DETR ({args.model}) on BDD100K")
-    print(f"  Dataset:       {len(dataset)} images"
-          + (f" ({args.fraction:.0%} subset)" if args.fraction < 1 else ""))
+    print(
+        f"  Dataset:       {len(dataset)} images"
+        + (f" ({args.fraction:.0%} subset)" if args.fraction < 1 else "")
+    )
     print(f"  Epochs:        {args.epochs}")
-    print(f"  Batch size:    {effective_batch} (bs={args.batch_size} x accum={args.grad_accum})")
+    print(
+        f"  Batch size:    {effective_batch} (bs={args.batch_size} x accum={args.grad_accum})"
+    )
     print(f"  Steps/epoch:   {steps_per_epoch}")
     print(f"  LR:            {args.lr}  (cosine, warmup={args.warmup_epochs} epochs)")
     print(f"  Resolution:    {img_size}")
@@ -167,14 +191,19 @@ def train(args: argparse.Namespace) -> None:
                 sub_mask = samples.mask[s:e]
 
                 sub_samples = NestedTensor(sub_samples_tensors, sub_mask)
-                sub_targets = [{k: v.to(device) for k, v in t.items()} for t in targets[s:e]]
+                sub_targets = [
+                    {k: v.to(device) for k, v in t.items()} for t in targets[s:e]
+                ]
 
-                with torch.autocast(device_type=device.type, enabled=use_amp, dtype=torch.bfloat16):
+                with torch.autocast(
+                    device_type=device.type, enabled=use_amp, dtype=torch.bfloat16
+                ):
                     outputs = model(sub_samples, sub_targets)
                     loss_dict = criterion(outputs, sub_targets)
                     loss = sum(
                         (1.0 / args.grad_accum) * loss_dict[k] * weight_dict[k]
-                        for k in loss_dict if k in weight_dict
+                        for k in loss_dict
+                        if k in weight_dict
                     )
 
                 scaler.scale(loss).backward()
@@ -197,9 +226,11 @@ def train(args: argparse.Namespace) -> None:
             if (step + 1) % 10 == 0 or step == 0:
                 avg = epoch_loss / (step + 1)
                 lr_now = optimizer.param_groups[0]["lr"]
-                print(f"  [Epoch {epoch+1}/{args.epochs}] "
-                      f"Step {step+1:>4d}/{steps_per_epoch}  "
-                      f"loss={loss_value:.4f}  avg={avg:.4f}  lr={lr_now:.2e}")
+                print(
+                    f"  [Epoch {epoch+1}/{args.epochs}] "
+                    f"Step {step+1:>4d}/{steps_per_epoch}  "
+                    f"loss={loss_value:.4f}  avg={avg:.4f}  lr={lr_now:.2e}"
+                )
 
         avg_epoch_loss = epoch_loss / max(steps_per_epoch, 1)
         print(f"  Epoch {epoch+1} complete — avg loss: {avg_epoch_loss:.4f}\n")

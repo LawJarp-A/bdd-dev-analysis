@@ -23,7 +23,12 @@ def _compute_one(img_path: Path, split: str) -> dict:
     result = {"image_name": img_path.name, "split": split}
     img = cv2.imread(str(img_path))
     if img is None:
-        return {**result, "blur_score": np.nan, "mean_brightness": np.nan, "contrast": np.nan}
+        return {
+            **result,
+            "blur_score": np.nan,
+            "mean_brightness": np.nan,
+            "contrast": np.nan,
+        }
     gray = cv2.cvtColor(img, cv2.COLOR_BGR2GRAY)
     return {
         **result,
@@ -41,8 +46,10 @@ def compute_all(workers: int | None = None) -> pd.DataFrame:
 
     todo = [
         (f, split)
-        for split, d in IMAGE_DIRS.items() if d.exists()
-        for f in sorted(d.iterdir()) if f.suffix.lower() in {".jpg", ".jpeg", ".png"} and f.name not in done
+        for split, d in IMAGE_DIRS.items()
+        if d.exists()
+        for f in sorted(d.iterdir())
+        if f.suffix.lower() in {".jpg", ".jpeg", ".png"} and f.name not in done
     ]
 
     if not todo:

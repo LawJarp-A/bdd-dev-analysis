@@ -89,7 +89,8 @@ class BDD100KDataset(Dataset):
         self.img_size = img_size
         self.image_dir = IMAGE_DIRS[split]
         self.transforms = transforms or (
-            get_train_transforms(img_size) if split == "train"
+            get_train_transforms(img_size)
+            if split == "train"
             else get_val_transforms(img_size)
         )
         self._images, self._annotations = self._load_labels(LABEL_FILES[split])
@@ -147,7 +148,9 @@ class BDD100KDataset(Dataset):
         )
 
         image_tensor = transformed["image"]
-        out_boxes = torch.as_tensor(transformed["bboxes"], dtype=torch.float32).reshape(-1, 4)
+        out_boxes = torch.as_tensor(transformed["bboxes"], dtype=torch.float32).reshape(
+            -1, 4
+        )
 
         if out_boxes.numel() > 0:
             out_boxes = _xyxy_to_cxcywh_normalised(out_boxes, self.img_size)
@@ -165,7 +168,9 @@ def collate_fn(
     """Collate images into a NestedTensor (no padding needed, all same size)."""
     images, targets = zip(*batch)
     stacked = torch.stack(images)
-    mask = torch.zeros(stacked.shape[0], stacked.shape[2], stacked.shape[3], dtype=torch.bool)
+    mask = torch.zeros(
+        stacked.shape[0], stacked.shape[2], stacked.shape[3], dtype=torch.bool
+    )
     return NestedTensor(stacked, mask), list(targets)
 
 
@@ -175,4 +180,6 @@ if __name__ == "__main__":
     samples, targets = next(iter(loader))
     print(f"Images: {samples.tensors.shape}, mask: {samples.mask.shape}")
     for i, t in enumerate(targets):
-        print(f"  Image {i}: {t['boxes'].shape[0]} boxes (cxcywh), labels={t['labels'].tolist()}")
+        print(
+            f"  Image {i}: {t['boxes'].shape[0]} boxes (cxcywh), labels={t['labels'].tolist()}"
+        )
