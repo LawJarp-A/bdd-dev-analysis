@@ -604,6 +604,8 @@ def load_predictions() -> dict:
     pred_csv = PRED_JSON.with_suffix(".csv")
     if not pred_csv.exists() and not PRED_JSON.exists():
         return {}
+    if not COCO_ANN.exists():
+        return {}
 
     with open(COCO_ANN) as f:
         coco = json.load(f)

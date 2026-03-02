@@ -2,6 +2,11 @@
 data/*
 !data/predictions/
 !data/image_metrics.csv
+!data/bdd100k_coco/
+data/bdd100k_coco/*
+!data/bdd100k_coco/valid/
+data/bdd100k_coco/valid/*
+!data/bdd100k_coco/valid/_annotations.coco.json
 data/predictions/*
 !data/predictions/eval_results.pkl
 !data/predictions/val_predictions.csv
