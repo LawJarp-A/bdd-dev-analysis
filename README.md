@@ -4,13 +4,16 @@ End-to-end object detection on [BDD100K](https://www.vis.xyz/bdd100k/): data ana
 
 ## Quick Start
 
+```bash
+# clone (includes Git LFS files for evaluation results)
+git lfs install
+git clone <repo-url>
+cd bdd-dev-analysis
+```
+
 **Docker (recommended):**
 ```bash
-docker compose up          # builds and runs everything
-
-# or manually:
-docker build -t bdd-analysis .
-docker run -p 8501:8501 -v ./data:/app/data bdd-analysis
+docker compose up          # builds, downloads data, and launches dashboard
 ```
 
 **Local:**
@@ -20,7 +23,7 @@ uv run python -m src.download_data
 uv run streamlit run src/dashboard.py
 ```
 
-Open [http://localhost:8501](http://localhost:8501). Data downloads automatically on first run.
+Open [http://localhost:8501](http://localhost:8501). BDD100K images (~5.7 GB) download automatically on first run. Pre-computed evaluation results and predictions are included in the repo via Git LFS.
 
 ## Project Phases
 
@@ -100,6 +103,17 @@ The dashboard presents all of this across 5 interactive tabs (Overview, Class De
 | bike | 54.2% | 1,007 |
 | rider | 51.3% | 649 |
 | train | 6.3% | 15 |
+
+### Phase 1 Predictions vs Phase 3 Results
+
+| What Phase 1 found | What we predicted | What Phase 3 confirmed |
+|---------------------|-------------------|------------------------|
+| 87.4% of boxes are small (<1% image area) | Small objects will drag down overall mAP | AP_small = 13.4% vs AP_large = 61.6% (4.6x gap) |
+| `train` is 0.01% of data (170 samples) | Rare classes will have near-zero AP | train AP@50 = 6.3% (worst class) |
+| Riders 89% occluded, bikes 84% occluded | These classes will have lower recall | rider AP@50 = 51.3%, bike AP@50 = 54.2% (bottom 3) |
+| Car dominates at 55.4% of annotations | Car will have highest AP | car AP@50 = 81.4% (best class) |
+| Dataset biased toward clear/daytime | Rainy+night will have higher failure rates | Rainy+night+tiny: 37.1% failure rate |
+| Night images are darker, fewer features | Night detection will underperform daytime | Night F1 = 0.693 vs Daytime F1 = 0.756 |
 
 ### Key Observations
 
